@@ -79,6 +79,7 @@ export default function Employees() {
         .select('id, name, email, role, is_admin_granted, color, is_active')
         .eq('is_active', true)
         .neq('role', ROLES.KIOSK)
+        .neq('role', ROLES.ADMIN)
         .order('name'),
       supabase.from('time_logs').select('user_id, business_date').is('clock_out', null),
     ]);

@@ -97,6 +97,7 @@ export default function Schedule() {
         .select('id, name, color, role, is_admin_granted, is_active')
         .eq('is_active', true)
         .neq('role', ROLES.KIOSK)
+        .neq('role', ROLES.ADMIN)
         .order('name'),
       supabase
         .from('shifts')
@@ -229,6 +230,16 @@ export default function Schedule() {
           })
           .eq('id', editingShift.id);
         if (error) throw error;
+
+        if (editingShift.status === SHIFT_STATUS.PUBLISHED) {
+          const emp = employees.find((e) => e.id === modalUserId);
+          await supabase.from('notifications').insert({
+            user_id: modalUserId,
+            title: 'Shift Updated',
+            body: `Your shift on ${new Date(modalDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} has been updated.`,
+            type: 'schedule',
+          });
+        }
       } else {
         const { error } = await supabase.from('shifts').insert(payload);
         if (error) throw error;
@@ -269,6 +280,19 @@ export default function Schedule() {
         .in('shift_date', week.dates)
         .eq('status', SHIFT_STATUS.DRAFT);
       if (error) throw error;
+
+      const affectedUserIds = [...new Set(weekDraftShifts.map((s) => s.user_id))];
+      const periodLabel = formatWeekRangeLabel(week.start, week.end);
+      const notifs = affectedUserIds.map((uid) => ({
+        user_id: uid,
+        title: 'Schedule Published',
+        body: `Your schedule for ${periodLabel} has been published.`,
+        type: 'schedule',
+      }));
+      if (notifs.length) {
+        await supabase.from('notifications').insert(notifs);
+      }
+
       setPublishOpen(false);
       await loadSchedule();
     } catch (e) {

@@ -153,6 +153,7 @@ export default function Payroll() {
           .select('id, name, color, pay_rate, role, is_active')
           .eq('is_active', true)
           .neq('role', ROLES.KIOSK)
+          .neq('role', ROLES.ADMIN)
           .order('name'),
       ]);
 

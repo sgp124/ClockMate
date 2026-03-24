@@ -105,6 +105,20 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
 
 CREATE INDEX idx_audit_log_date ON admin_audit_log(created_at DESC);
 
+-- Notifications (in-app)
+CREATE TABLE IF NOT EXISTS notifications (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id),
+  title text NOT NULL,
+  body text,
+  type text NOT NULL DEFAULT 'info'
+    CHECK (type IN ('info', 'schedule', 'timeoff', 'alert')),
+  is_read boolean NOT NULL DEFAULT false,
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE INDEX idx_notifications_user ON notifications(user_id, is_read, created_at DESC);
+
 -- Rate-limit table for kiosk PIN attempts
 CREATE TABLE IF NOT EXISTS pin_attempts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -188,6 +202,7 @@ ALTER TABLE shifts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE time_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE time_off_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_audit_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pin_attempts ENABLE ROW LEVEL SECURITY;
 
@@ -272,6 +287,16 @@ CREATE POLICY "settings_select" ON settings
 
 CREATE POLICY "settings_update" ON settings
   FOR UPDATE USING (is_admin(auth.uid()));
+
+-- ---- NOTIFICATIONS ----
+CREATE POLICY "notifications_select" ON notifications
+  FOR SELECT USING (user_id = auth.uid());
+
+CREATE POLICY "notifications_insert" ON notifications
+  FOR INSERT WITH CHECK (is_admin(auth.uid()));
+
+CREATE POLICY "notifications_update" ON notifications
+  FOR UPDATE USING (user_id = auth.uid());
 
 -- ---- PIN ATTEMPTS ----
 -- Kiosk can insert attempts; only admins can read

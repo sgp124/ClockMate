@@ -41,7 +41,7 @@ export default function Dashboard() {
         .eq('status', 'published'),
       supabase
         .from('time_logs')
-        .select('*, users!inner(name, color)')
+        .select('*, users:user_id(name, color)')
         .is('clock_out', null),
       supabase
         .from('time_off_requests')
@@ -51,7 +51,8 @@ export default function Dashboard() {
         .from('users')
         .select('id, name, color, role, is_admin_granted, is_active')
         .eq('is_active', true)
-        .neq('role', 'kiosk'),
+        .neq('role', 'kiosk')
+        .neq('role', 'admin'),
     ]);
 
     setSettings(settingsRes.data);

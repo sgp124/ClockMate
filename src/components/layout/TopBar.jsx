@@ -1,6 +1,7 @@
 import { useAuth } from '../../contexts/AuthContext';
 import { Settings, LogOut, Clock } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import NotificationBell from '../ui/NotificationBell';
 
 export default function TopBar({ title, showSettings = false }) {
   const { user, logout } = useAuth();
@@ -28,6 +29,7 @@ export default function TopBar({ title, showSettings = false }) {
           <span className="text-sm font-medium text-brand-900 hidden sm:block">
             {user?.name}
           </span>
+          {!user?.isKiosk && <NotificationBell />}
           {showSettings && (
             <Link
               to="/admin/settings"
