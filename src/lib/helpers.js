@@ -1,13 +1,3 @@
-import bcrypt from 'bcryptjs';
-
-export function hashPassword(password) {
-  return bcrypt.hashSync(password, 10);
-}
-
-export function comparePassword(password, hash) {
-  return bcrypt.compareSync(password, hash);
-}
-
 export function getGreeting() {
   const hour = new Date().getHours();
   if (hour < 12) return { text: 'Good Morning', emoji: '☀️' };
@@ -92,18 +82,6 @@ export function formatDuration(hours) {
   const h = Math.floor(hours);
   const m = Math.round((hours - h) * 60);
   return `${h}:${String(m).padStart(2, '0')}`;
-}
-
-export function derivePinFromPhone(phone) {
-  const digits = (phone || '').replace(/\D/g, '');
-  if (digits.length >= 4) {
-    return digits.slice(-4);
-  }
-  return generateRandomPin();
-}
-
-export function generateRandomPin() {
-  return String(Math.floor(1000 + Math.random() * 9000));
 }
 
 export function cn(...classes) {

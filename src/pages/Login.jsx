@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getGreeting } from '../lib/helpers';
@@ -12,7 +12,7 @@ const roleConfig = {
     label: 'Admin',
     iconBg: 'bg-brand-50',
     iconColor: 'text-brand-500',
-    canRegister: true,
+    canRegister: false,
     registerRole: 'admin',
   },
   employee: {
@@ -28,7 +28,7 @@ const roleConfig = {
     label: 'Kiosk',
     iconBg: 'bg-violet-50',
     iconColor: 'text-violet-500',
-    canRegister: true,
+    canRegister: false,
     registerRole: 'kiosk',
   },
 };
@@ -40,15 +40,24 @@ export default function Login() {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [createdPin, setCreatedPin] = useState(null);
+  const [createdPin] = useState(null);
   const { login, register, loading, error, setError } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const greeting = getGreeting();
 
+  const { user: authedUser } = useAuth();
   const selectedRole = searchParams.get('role') || 'employee';
   const config = roleConfig[selectedRole] || roleConfig.employee;
   const RoleIcon = config.icon;
+
+  useEffect(() => {
+    if (authedUser) {
+      if (authedUser.isKiosk) navigate('/kiosk', { replace: true });
+      else if (authedUser.isAdmin) navigate('/admin', { replace: true });
+      else navigate('/my/schedule', { replace: true });
+    }
+  }, [authedUser, navigate]);
 
   function resetForm() {
     setEmail('');
@@ -73,39 +82,31 @@ export default function Login() {
         setError('Please enter your email and password.');
         return;
       }
-      const user = await login(email, password);
-      if (!user) return;
-      routeUser(user);
+      const result = await login(email, password);
+      if (!result) return;
+      // onAuthStateChange will update user state; wait then route
     } else {
       if (!name.trim() || !email.trim() || !password) {
         setError('Please fill in all fields.');
         return;
       }
-      if (password.length < 6) {
-        setError('Password must be at least 6 characters.');
+      if (password.length < 8) {
+        setError('Password must be at least 8 characters.');
         return;
       }
-      if (selectedRole !== 'kiosk' && !phone.trim()) {
+      if (!phone.trim()) {
         setError('Phone number is required (last 4 digits become your kiosk PIN).');
         return;
       }
-      const user = await register({
+      const result = await register({
         name,
         email,
         phone: phone.trim(),
         password,
         role: config.registerRole,
       });
-      if (!user) return;
-      if (user.pin) setCreatedPin(user.pin);
-      routeUser(user);
+      if (!result) return;
     }
-  }
-
-  function routeUser(user) {
-    if (user.isKiosk) navigate('/kiosk', { replace: true });
-    else if (user.isAdmin) navigate('/admin', { replace: true });
-    else navigate('/my/schedule', { replace: true });
   }
 
   return (

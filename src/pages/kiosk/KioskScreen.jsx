@@ -69,13 +69,20 @@ export default function KioskScreen() {
   async function lookupByPin(enteredPin) {
     setPhase('loading');
     try {
-      const { data: matched } = await supabase
-        .from('users')
-        .select('*')
-        .eq('pin', enteredPin)
-        .eq('is_active', true)
-        .maybeSingle();
+      const { data: results, error: rpcErr } = await supabase
+        .rpc('lookup_pin', { entered_pin: enteredPin });
 
+      if (rpcErr) {
+        const msg = rpcErr.message.includes('Too many')
+          ? 'Too many attempts. Please wait a moment.'
+          : 'Connection error. Please try again.';
+        setError(msg);
+        setPhase('pin');
+        setPin('');
+        return;
+      }
+
+      const matched = results?.[0];
       if (!matched) {
         setError('PIN not found. Check your PIN or see your manager.');
         setPhase('pin');
@@ -83,7 +90,7 @@ export default function KioskScreen() {
         return;
       }
 
-      setEmployee(matched);
+      setEmployee({ id: matched.user_id, name: matched.user_name, color: matched.user_color });
 
       const { data: todayShifts } = await supabase
         .from('shifts')

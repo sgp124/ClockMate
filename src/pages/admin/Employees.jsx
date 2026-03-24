@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
-import { hashPassword, derivePinFromPhone, generateRandomPin, getBusinessDate, cn } from '../../lib/helpers';
+import { getBusinessDate, cn } from '../../lib/helpers';
 import { EMPLOYEE_COLORS, ROLES, AUDIT_ACTIONS } from '../../lib/constants';
 import TopBar from '../../components/layout/TopBar';
 import Modal from '../../components/ui/Modal';
@@ -11,17 +11,29 @@ import EmptyState from '../../components/ui/EmptyState';
 import Alert from '../../components/ui/Alert';
 import { Users, UserPlus, Search, ChevronRight } from 'lucide-react';
 
+function generateSecurePin() {
+  const array = new Uint32Array(1);
+  crypto.getRandomValues(array);
+  return String(1000 + (array[0] % 9000));
+}
+
+function derivePinFromPhone(phone) {
+  const digits = (phone || '').replace(/\D/g, '');
+  if (digits.length >= 4) return digits.slice(-4);
+  return generateSecurePin();
+}
+
 async function resolveUniquePin(preferredPin) {
   const { data: conflict } = await supabase
     .from('users').select('id').eq('pin', preferredPin).eq('is_active', true).maybeSingle();
   if (!conflict) return preferredPin;
   for (let i = 0; i < 20; i++) {
-    const candidate = generateRandomPin();
+    const candidate = generateSecurePin();
     const { data: dup } = await supabase
       .from('users').select('id').eq('pin', candidate).eq('is_active', true).maybeSingle();
     if (!dup) return candidate;
   }
-  return null;
+  return generateSecurePin();
 }
 
 function RoleBadge({ employee }) {
@@ -110,7 +122,7 @@ export default function Employees() {
     if (!name) { setFormError('Name is required.'); return; }
     if (!email) { setFormError('Email is required.'); return; }
     if (!phone) { setFormError('Phone number is required.'); return; }
-    if (!password || password.length < 6) { setFormError('Password must be at least 6 characters.'); return; }
+    if (!password || password.length < 8) { setFormError('Password must be at least 8 characters.'); return; }
 
     setSaving(true);
     try {
@@ -122,26 +134,36 @@ export default function Employees() {
 
       const preferredPin = derivePinFromPhone(phone);
       const pin = await resolveUniquePin(preferredPin);
-      if (!pin) throw new Error('Could not generate a unique PIN. Please try again.');
 
       const color = EMPLOYEE_COLORS[(count ?? 0) % EMPLOYEE_COLORS.length];
 
-      const { data: inserted, error: insertErr } = await supabase
-        .from('users')
-        .insert({
-          name,
-          email,
-          phone,
-          password: hashPassword(password),
-          pin,
-          role: form.role,
-          color,
-          is_active: true,
-        })
-        .select('id')
-        .single();
+      // Create via Supabase Auth — trigger auto-creates the users row
+      const { data: authData, error: signUpErr } = await supabase.auth.admin
+        ? await supabase.auth.admin.createUser({
+            email,
+            password,
+            email_confirm: true,
+            user_metadata: { name, role: form.role },
+          })
+        : await supabase.auth.signUp({
+            email,
+            password,
+            options: { data: { name, role: form.role } },
+          });
 
-      if (insertErr) throw insertErr;
+      if (signUpErr) throw signUpErr;
+      const newUserId = authData?.user?.id;
+      if (!newUserId) throw new Error('Failed to create auth account.');
+
+      // Update the profile row created by the trigger
+      const { error: updateErr } = await supabase
+        .from('users')
+        .update({ phone, pin, color })
+        .eq('id', newUserId);
+
+      if (updateErr) throw updateErr;
+
+      const inserted = { id: newUserId };
 
       await supabase.from('admin_audit_log').insert({
         action: AUDIT_ACTIONS.CREATE_USER,

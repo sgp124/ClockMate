@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
-import { hashPassword, derivePinFromPhone, generateRandomPin, formatTimestamp } from '../../lib/helpers';
+import { formatTimestamp } from '../../lib/helpers';
 import { ROLES, AUDIT_ACTIONS } from '../../lib/constants';
 import TopBar from '../../components/layout/TopBar';
 import Modal from '../../components/ui/Modal';
@@ -19,6 +19,18 @@ import {
   UserX,
 } from 'lucide-react';
 
+function generateSecurePin() {
+  const array = new Uint32Array(1);
+  crypto.getRandomValues(array);
+  return String(1000 + (array[0] % 9000));
+}
+
+function derivePinFromPhone(phone) {
+  const digits = (phone || '').replace(/\D/g, '');
+  if (digits.length >= 4) return digits.slice(-4);
+  return generateSecurePin();
+}
+
 async function resolveUniquePin(preferredPin, excludeUserId) {
   const query = supabase
     .from('users').select('id').eq('pin', preferredPin).eq('is_active', true);
@@ -26,14 +38,14 @@ async function resolveUniquePin(preferredPin, excludeUserId) {
   const { data: conflict } = await query.maybeSingle();
   if (!conflict) return preferredPin;
   for (let i = 0; i < 20; i++) {
-    const candidate = generateRandomPin();
+    const candidate = generateSecurePin();
     const q2 = supabase
       .from('users').select('id').eq('pin', candidate).eq('is_active', true);
     if (excludeUserId) q2.neq('id', excludeUserId);
     const { data: dup } = await q2.maybeSingle();
     if (!dup) return candidate;
   }
-  return null;
+  return generateSecurePin();
 }
 
 function RoleBadge({ employee }) {
@@ -189,15 +201,14 @@ export default function EmployeeProfile() {
   async function handlePasswordReset(e) {
     e.preventDefault();
     setPasswordError(null);
-    if (!newPassword || newPassword.length < 6) {
-      setPasswordError('Password must be at least 6 characters.');
+    if (!newPassword || newPassword.length < 8) {
+      setPasswordError('Password must be at least 8 characters.');
       return;
     }
     setPasswordResetting(true);
-    const { error } = await supabase
-      .from('users')
-      .update({ password: hashPassword(newPassword) })
-      .eq('id', id);
+    const { error } = await supabase.auth.admin
+      ? await supabase.auth.admin.updateUserById(id, { password: newPassword })
+      : { error: { message: 'Admin API not available. Use Supabase dashboard to reset password.' } };
 
     if (error) {
       setPasswordError(error.message);
@@ -215,7 +226,7 @@ export default function EmployeeProfile() {
     setActionError(null);
     const preferred = employee?.phone
       ? derivePinFromPhone(employee.phone)
-      : generateRandomPin();
+      : generateSecurePin();
     const pin = await resolveUniquePin(preferred, id);
 
     if (!pin) {
