@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
-import { hashPin, generatePin, getBusinessDate, cn } from '../../lib/helpers';
+import { hashPassword, derivePinFromPhone, generateRandomPin, getBusinessDate, cn } from '../../lib/helpers';
 import { EMPLOYEE_COLORS, ROLES, AUDIT_ACTIONS } from '../../lib/constants';
 import TopBar from '../../components/layout/TopBar';
 import Modal from '../../components/ui/Modal';
@@ -10,6 +10,19 @@ import Spinner from '../../components/ui/Spinner';
 import EmptyState from '../../components/ui/EmptyState';
 import Alert from '../../components/ui/Alert';
 import { Users, UserPlus, Search, ChevronRight } from 'lucide-react';
+
+async function resolveUniquePin(preferredPin) {
+  const { data: conflict } = await supabase
+    .from('users').select('id').eq('pin', preferredPin).eq('is_active', true).maybeSingle();
+  if (!conflict) return preferredPin;
+  for (let i = 0; i < 20; i++) {
+    const candidate = generateRandomPin();
+    const { data: dup } = await supabase
+      .from('users').select('id').eq('pin', candidate).eq('is_active', true).maybeSingle();
+    if (!dup) return candidate;
+  }
+  return null;
+}
 
 function RoleBadge({ employee }) {
   if (employee.role === ROLES.ADMIN) {
@@ -37,7 +50,7 @@ export default function Employees() {
   const [addOpen, setAddOpen] = useState(false);
   const [pinRevealOpen, setPinRevealOpen] = useState(false);
   const [revealedPin, setRevealedPin] = useState('');
-  const [form, setForm] = useState({ name: '', email: '', role: ROLES.EMPLOYEE });
+  const [form, setForm] = useState({ name: '', email: '', phone: '', password: '', role: ROLES.EMPLOYEE });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState(null);
 
@@ -81,7 +94,7 @@ export default function Employees() {
   }, [employees, search]);
 
   function openAddModal() {
-    setForm({ name: '', email: '', role: ROLES.EMPLOYEE });
+    setForm({ name: '', email: '', phone: '', password: '', role: ROLES.EMPLOYEE });
     setFormError(null);
     setAddOpen(true);
   }
@@ -90,10 +103,15 @@ export default function Employees() {
     e.preventDefault();
     setFormError(null);
     const name = form.name.trim();
-    if (!name) {
-      setFormError('Name is required.');
-      return;
-    }
+    const email = form.email.trim();
+    const phone = form.phone.trim();
+    const password = form.password;
+
+    if (!name) { setFormError('Name is required.'); return; }
+    if (!email) { setFormError('Email is required.'); return; }
+    if (!phone) { setFormError('Phone number is required.'); return; }
+    if (!password || password.length < 6) { setFormError('Password must be at least 6 characters.'); return; }
+
     setSaving(true);
     try {
       const { count, error: countErr } = await supabase
@@ -101,16 +119,21 @@ export default function Employees() {
         .select('*', { count: 'exact', head: true })
         .eq('is_active', true);
       if (countErr) throw countErr;
-      const plainPin = generatePin();
+
+      const preferredPin = derivePinFromPhone(phone);
+      const pin = await resolveUniquePin(preferredPin);
+      if (!pin) throw new Error('Could not generate a unique PIN. Please try again.');
+
       const color = EMPLOYEE_COLORS[(count ?? 0) % EMPLOYEE_COLORS.length];
-      const email = form.email.trim() || null;
 
       const { data: inserted, error: insertErr } = await supabase
         .from('users')
         .insert({
           name,
           email,
-          pin: hashPin(plainPin),
+          phone,
+          password: hashPassword(password),
+          pin,
           role: form.role,
           color,
           is_active: true,
@@ -125,11 +148,11 @@ export default function Employees() {
         performed_by: user.id,
         target_user_id: inserted.id,
         old_value: null,
-        new_value: JSON.stringify({ name, email, role: form.role }),
+        new_value: JSON.stringify({ name, email, phone, role: form.role }),
       });
 
       setAddOpen(false);
-      setRevealedPin(plainPin);
+      setRevealedPin(pin);
       setPinRevealOpen(true);
       await loadEmployees();
     } catch (err) {
@@ -275,7 +298,39 @@ export default function Employees() {
               className="input-field"
               value={form.email}
               onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+              required
               autoComplete="email"
+            />
+          </div>
+          <div>
+            <label htmlFor="emp-phone" className="label">
+              Phone <span className="text-xs text-muted font-normal">(last 4 digits = kiosk PIN)</span>
+            </label>
+            <input
+              id="emp-phone"
+              type="tel"
+              className="input-field"
+              value={form.phone}
+              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+              required
+              autoComplete="tel"
+              placeholder="(555) 123-4567"
+            />
+          </div>
+          <div>
+            <label htmlFor="emp-password" className="label">
+              Password
+            </label>
+            <input
+              id="emp-password"
+              type="password"
+              className="input-field"
+              value={form.password}
+              onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+              required
+              minLength={6}
+              autoComplete="new-password"
+              placeholder="Min 6 characters"
             />
           </div>
           <div>
@@ -293,7 +348,7 @@ export default function Employees() {
             </select>
           </div>
           <p className="text-xs text-muted">
-            A 4-digit PIN will be generated automatically. You&apos;ll see it once after saving.
+            A kiosk PIN will be derived from the phone number. You&apos;ll see it once after saving.
           </p>
           <div className="flex gap-3 pt-2">
             <button type="button" className="btn-secondary flex-1" onClick={() => setAddOpen(false)} disabled={saving}>
@@ -312,14 +367,14 @@ export default function Employees() {
           setPinRevealOpen(false);
           setRevealedPin('');
         }}
-        title="PIN created"
+        title="Kiosk PIN created"
         size="sm"
       >
         <p className="text-sm text-muted mb-3">
-          Share this PIN with the employee. It won&apos;t be shown again.
+          Share this PIN with the employee for kiosk clock-in/out. It won&apos;t be shown again.
         </p>
         <div className="rounded-xl bg-brand-50 border border-brand-200/80 px-4 py-4 text-center shadow-inner">
-          <p className="text-xs font-medium text-brand-600 uppercase tracking-wide mb-1">PIN</p>
+          <p className="text-xs font-medium text-brand-600 uppercase tracking-wide mb-1">Kiosk PIN</p>
           <p className="text-3xl font-bold tracking-[0.2em] text-brand-900 tabular-nums">{revealedPin}</p>
         </div>
         <button

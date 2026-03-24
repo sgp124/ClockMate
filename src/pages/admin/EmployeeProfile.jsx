@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
-import { hashPin, generatePin, formatTimestamp } from '../../lib/helpers';
+import { hashPassword, derivePinFromPhone, generateRandomPin, formatTimestamp } from '../../lib/helpers';
 import { ROLES, AUDIT_ACTIONS } from '../../lib/constants';
 import TopBar from '../../components/layout/TopBar';
 import Modal from '../../components/ui/Modal';
@@ -13,9 +13,28 @@ import {
   Clock,
   ClipboardList,
   KeyRound,
+  Lock,
+  Phone,
   Shield,
   UserX,
 } from 'lucide-react';
+
+async function resolveUniquePin(preferredPin, excludeUserId) {
+  const query = supabase
+    .from('users').select('id').eq('pin', preferredPin).eq('is_active', true);
+  if (excludeUserId) query.neq('id', excludeUserId);
+  const { data: conflict } = await query.maybeSingle();
+  if (!conflict) return preferredPin;
+  for (let i = 0; i < 20; i++) {
+    const candidate = generateRandomPin();
+    const q2 = supabase
+      .from('users').select('id').eq('pin', candidate).eq('is_active', true);
+    if (excludeUserId) q2.neq('id', excludeUserId);
+    const { data: dup } = await q2.maybeSingle();
+    if (!dup) return candidate;
+  }
+  return null;
+}
 
 function RoleBadge({ employee }) {
   if (employee.role === ROLES.ADMIN) {
@@ -40,9 +59,13 @@ export default function EmployeeProfile() {
   const [paySaving, setPaySaving] = useState(false);
   const [payMessage, setPayMessage] = useState(null);
   const [adminToggleLoading, setAdminToggleLoading] = useState(false);
-  const [pinModalOpen, setPinModalOpen] = useState(false);
-  const [newPinPlain, setNewPinPlain] = useState('');
-  const [pinResetting, setPinResetting] = useState(false);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [passwordResetting, setPasswordResetting] = useState(false);
+  const [passwordError, setPasswordError] = useState(null);
+  const [pinRegenerating, setPinRegenerating] = useState(false);
+  const [pinRevealOpen, setPinRevealOpen] = useState(false);
+  const [revealedPin, setRevealedPin] = useState('');
   const [deactivateOpen, setDeactivateOpen] = useState(false);
   const [deactivateLoading, setDeactivateLoading] = useState(false);
   const [actionError, setActionError] = useState(null);
@@ -54,7 +77,7 @@ export default function EmployeeProfile() {
       supabase
         .from('users')
         .select(
-          'id, name, email, role, is_admin_granted, color, is_active, pay_rate, pay_rate_type, created_at'
+          'id, name, email, phone, pin, role, is_admin_granted, color, is_active, pay_rate, pay_rate_type, created_at'
         )
         .eq('id', id)
         .maybeSingle(),
@@ -163,21 +186,56 @@ export default function EmployeeProfile() {
     setAdminToggleLoading(false);
   }
 
-  async function handlePinReset() {
-    setPinResetting(true);
-    setActionError(null);
-    const plain = generatePin();
-    const { error } = await supabase.from('users').update({ pin: hashPin(plain) }).eq('id', id);
+  async function handlePasswordReset(e) {
+    e.preventDefault();
+    setPasswordError(null);
+    if (!newPassword || newPassword.length < 6) {
+      setPasswordError('Password must be at least 6 characters.');
+      return;
+    }
+    setPasswordResetting(true);
+    const { error } = await supabase
+      .from('users')
+      .update({ password: hashPassword(newPassword) })
+      .eq('id', id);
 
     if (error) {
-      setActionError(error.message);
-      setPinResetting(false);
+      setPasswordError(error.message);
+      setPasswordResetting(false);
       return;
     }
 
-    setNewPinPlain(plain);
-    setPinModalOpen(true);
-    setPinResetting(false);
+    setPasswordModalOpen(false);
+    setNewPassword('');
+    setPasswordResetting(false);
+  }
+
+  async function handleRegeneratePin() {
+    setPinRegenerating(true);
+    setActionError(null);
+    const preferred = employee?.phone
+      ? derivePinFromPhone(employee.phone)
+      : generateRandomPin();
+    const pin = await resolveUniquePin(preferred, id);
+
+    if (!pin) {
+      setActionError('Could not generate a unique PIN. Please try again.');
+      setPinRegenerating(false);
+      return;
+    }
+
+    const { error } = await supabase.from('users').update({ pin }).eq('id', id);
+
+    if (error) {
+      setActionError(error.message);
+      setPinRegenerating(false);
+      return;
+    }
+
+    setEmployee((prev) => (prev ? { ...prev, pin } : prev));
+    setRevealedPin(pin);
+    setPinRevealOpen(true);
+    setPinRegenerating(false);
   }
 
   async function handleDeactivate() {
@@ -271,13 +329,19 @@ export default function EmployeeProfile() {
             <div className="flex-1 min-w-0">
               <h1 className="text-xl font-bold text-brand-900 tracking-tight">{employee.name}</h1>
               <p className="text-sm text-muted mt-0.5 break-all">{employee.email || 'No email on file'}</p>
+              {employee.phone && (
+                <p className="text-sm text-muted mt-0.5 flex items-center gap-1.5">
+                  <Phone size={14} className="shrink-0" />
+                  {employee.phone}
+                </p>
+              )}
               <div className="mt-3">
                 <RoleBadge employee={employee} />
               </div>
             </div>
           </div>
 
-          <div className="rounded-xl bg-surface/80 border border-border/80 px-4 py-3 flex flex-wrap items-center gap-3">
+          <div className="rounded-xl bg-surface/80 border border-border/80 px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
             <div
               className={`flex items-center gap-2 text-sm font-medium ${
                 isClockedIn ? 'text-emerald-600' : 'text-muted'
@@ -297,17 +361,36 @@ export default function EmployeeProfile() {
                 <span>Clocked out</span>
               )}
             </div>
+            {employee.pin && (
+              <div className="flex items-center gap-2 text-sm text-muted">
+                <KeyRound size={16} className="shrink-0" />
+                Kiosk PIN: <span className="font-mono font-semibold text-brand-900 tracking-wider">{employee.pin}</span>
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap gap-3 pt-1">
             <button
               type="button"
               className="btn-secondary gap-2"
-              onClick={handlePinReset}
-              disabled={pinResetting || !employee.is_active}
+              onClick={() => {
+                setPasswordError(null);
+                setNewPassword('');
+                setPasswordModalOpen(true);
+              }}
+              disabled={!employee.is_active}
+            >
+              <Lock size={18} />
+              Reset Password
+            </button>
+            <button
+              type="button"
+              className="btn-secondary gap-2"
+              onClick={handleRegeneratePin}
+              disabled={pinRegenerating || !employee.is_active}
             >
               <KeyRound size={18} />
-              {pinResetting ? 'Resetting…' : 'Reset PIN'}
+              {pinRegenerating ? 'Regenerating…' : 'Regenerate PIN'}
             </button>
             <Link
               to={`/admin/timesheets?employee=${id}`}
@@ -420,25 +503,71 @@ export default function EmployeeProfile() {
       </main>
 
       <Modal
-        open={pinModalOpen}
-        onClose={() => {
-          setPinModalOpen(false);
-          setNewPinPlain('');
-        }}
-        title="New PIN"
+        open={passwordModalOpen}
+        onClose={() => !passwordResetting && setPasswordModalOpen(false)}
+        title="Reset Password"
         size="sm"
       >
-        <p className="text-sm text-muted mb-3">Share this PIN once. It won&apos;t be shown again.</p>
+        <form onSubmit={handlePasswordReset} className="space-y-4">
+          {passwordError && (
+            <Alert variant="error" title="Error">
+              {passwordError}
+            </Alert>
+          )}
+          <div>
+            <label htmlFor="new-password" className="label">
+              New password
+            </label>
+            <input
+              id="new-password"
+              type="password"
+              className="input-field"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              required
+              minLength={6}
+              autoComplete="new-password"
+              placeholder="Min 6 characters"
+            />
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button
+              type="button"
+              className="btn-secondary flex-1"
+              onClick={() => setPasswordModalOpen(false)}
+              disabled={passwordResetting}
+            >
+              Cancel
+            </button>
+            <button type="submit" className="btn-primary flex-1" disabled={passwordResetting}>
+              {passwordResetting ? 'Saving…' : 'Save Password'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={pinRevealOpen}
+        onClose={() => {
+          setPinRevealOpen(false);
+          setRevealedPin('');
+        }}
+        title="New Kiosk PIN"
+        size="sm"
+      >
+        <p className="text-sm text-muted mb-3">
+          Share this PIN with the employee for kiosk clock-in/out. It won&apos;t be shown again.
+        </p>
         <div className="rounded-xl bg-emerald-50 border border-emerald-200/80 px-4 py-4 text-center shadow-inner">
-          <p className="text-xs font-medium text-emerald-700 uppercase tracking-wide mb-1">PIN</p>
-          <p className="text-3xl font-bold tracking-[0.2em] text-brand-900 tabular-nums">{newPinPlain}</p>
+          <p className="text-xs font-medium text-emerald-700 uppercase tracking-wide mb-1">Kiosk PIN</p>
+          <p className="text-3xl font-bold tracking-[0.2em] text-brand-900 tabular-nums">{revealedPin}</p>
         </div>
         <button
           type="button"
           className="btn-primary w-full mt-5"
           onClick={() => {
-            setPinModalOpen(false);
-            setNewPinPlain('');
+            setPinRevealOpen(false);
+            setRevealedPin('');
           }}
         >
           Done
@@ -448,7 +577,7 @@ export default function EmployeeProfile() {
       <Modal open={deactivateOpen} onClose={() => !deactivateLoading && setDeactivateOpen(false)} title="Deactivate employee?" size="md">
         <p className="text-sm text-muted mb-5">
           <span className="font-medium text-brand-900">{employee.name}</span> will no longer appear in the active
-          roster or be able to sign in with their PIN.
+          roster or be able to sign in.
         </p>
         <div className="flex gap-3">
           <button type="button" className="btn-secondary flex-1" onClick={() => setDeactivateOpen(false)} disabled={deactivateLoading}>

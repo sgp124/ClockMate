@@ -1,14 +1,16 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
-import { comparePin, getGreeting, getBusinessDate, formatTime, formatTimestamp } from '../../lib/helpers';
-import { Clock, Delete, CheckCircle, AlertTriangle } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
+import { getGreeting, getBusinessDate, formatTime } from '../../lib/helpers';
+import { Clock, Delete, CheckCircle, AlertTriangle, LogOut } from 'lucide-react';
 import Spinner from '../../components/ui/Spinner';
 
 const INACTIVITY_TIMEOUT = 10000;
 const SUCCESS_DISPLAY_MS = 4000;
 
 export default function KioskScreen() {
-  const [state, setState] = useState('pin'); // pin | loading | recognized | success
+  const { user, logout } = useAuth();
+  const [phase, setPhase] = useState('pin'); // pin | loading | recognized | success
   const [pin, setPin] = useState('');
   const [employee, setEmployee] = useState(null);
   const [shift, setShift] = useState(null);
@@ -27,7 +29,7 @@ export default function KioskScreen() {
   }, []);
 
   useEffect(() => {
-    if (state === 'pin' && pin.length > 0) {
+    if (phase === 'pin' && pin.length > 0) {
       clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
         setPin('');
@@ -35,7 +37,7 @@ export default function KioskScreen() {
       }, INACTIVITY_TIMEOUT);
     }
     return () => clearTimeout(timerRef.current);
-  }, [pin, state]);
+  }, [pin, phase]);
 
   async function loadSettings() {
     const { data } = await supabase.from('settings').select('*').limit(1).single();
@@ -43,40 +45,40 @@ export default function KioskScreen() {
   }
 
   const greeting = getGreeting();
-  const businessDate = getBusinessDate(currentTime, settings?.business_day_start ? parseInt(settings.business_day_start) : 10);
-
-  const handleDigit = useCallback(
-    (digit) => {
-      if (pin.length >= 4) return;
-      const next = pin + digit;
-      setPin(next);
-      setError(null);
-
-      if (next.length === 4) {
-        authenticateEmployee(next);
-      }
-    },
-    [pin]
+  const businessDate = getBusinessDate(
+    currentTime,
+    settings?.business_day_start ? parseInt(settings.business_day_start) : 10
   );
 
-  const handleBackspace = useCallback(() => {
+  function handleDigit(digit) {
+    if (pin.length >= 4) return;
+    const next = pin + digit;
+    setPin(next);
+    setError(null);
+
+    if (next.length === 4) {
+      lookupByPin(next);
+    }
+  }
+
+  function handleBackspace() {
     setPin((prev) => prev.slice(0, -1));
     setError(null);
-  }, []);
+  }
 
-  async function authenticateEmployee(enteredPin) {
-    setState('loading');
+  async function lookupByPin(enteredPin) {
+    setPhase('loading');
     try {
-      const { data: users } = await supabase
+      const { data: matched } = await supabase
         .from('users')
         .select('*')
+        .eq('pin', enteredPin)
         .eq('is_active', true)
-        .in('role', ['employee', 'admin']);
+        .maybeSingle();
 
-      const matched = users?.find((u) => comparePin(enteredPin, u.pin));
       if (!matched) {
-        setError('Invalid PIN');
-        setState('pin');
+        setError('PIN not found. Check your PIN or see your manager.');
+        setPhase('pin');
         setPin('');
         return;
       }
@@ -110,16 +112,16 @@ export default function KioskScreen() {
         setForgotWarning(null);
       }
 
-      setState('recognized');
+      setPhase('recognized');
     } catch {
       setError('Connection error. Please try again.');
-      setState('pin');
+      setPhase('pin');
       setPin('');
     }
   }
 
   async function handleClockIn() {
-    setState('loading');
+    setPhase('loading');
     let lat = null;
     let lng = null;
 
@@ -130,7 +132,7 @@ export default function KioskScreen() {
       lat = pos.coords.latitude;
       lng = pos.coords.longitude;
     } catch {
-      // GPS not available — continue without it
+      // GPS not available
     }
 
     const { error: insertErr } = await supabase.from('time_logs').insert({
@@ -143,17 +145,17 @@ export default function KioskScreen() {
 
     if (insertErr) {
       setError('Failed to clock in. Please try again.');
-      setState('recognized');
+      setPhase('recognized');
       return;
     }
 
     setSuccessMsg(`${employee.name} clocked in`);
-    setState('success');
+    setPhase('success');
     setTimeout(resetToPin, SUCCESS_DISPLAY_MS);
   }
 
   async function handleClockOut() {
-    setState('loading');
+    setPhase('loading');
 
     const { error: updateErr } = await supabase
       .from('time_logs')
@@ -162,17 +164,17 @@ export default function KioskScreen() {
 
     if (updateErr) {
       setError('Failed to clock out. Please try again.');
-      setState('recognized');
+      setPhase('recognized');
       return;
     }
 
     setSuccessMsg(`${employee.name} clocked out`);
-    setState('success');
+    setPhase('success');
     setTimeout(resetToPin, SUCCESS_DISPLAY_MS);
   }
 
   function resetToPin() {
-    setState('pin');
+    setPhase('pin');
     setPin('');
     setEmployee(null);
     setShift(null);
@@ -188,9 +190,8 @@ export default function KioskScreen() {
     second: '2-digit',
   });
 
-  // ---- RENDER ----
-
-  if (state === 'success') {
+  // ---- SUCCESS ----
+  if (phase === 'success') {
     return (
       <div className="min-h-screen bg-surface flex flex-col items-center justify-center px-6 animate-fade-in">
         <CheckCircle size={64} className="text-emerald-500 mb-4" />
@@ -200,7 +201,8 @@ export default function KioskScreen() {
     );
   }
 
-  if (state === 'loading') {
+  // ---- LOADING ----
+  if (phase === 'loading') {
     return (
       <div className="min-h-screen bg-surface flex flex-col items-center justify-center">
         <Spinner size="lg" />
@@ -208,7 +210,8 @@ export default function KioskScreen() {
     );
   }
 
-  if (state === 'recognized' && employee) {
+  // ---- RECOGNIZED ----
+  if (phase === 'recognized' && employee) {
     const isClockedIn = openLog && openLog.business_date === businessDate;
 
     return (
@@ -262,7 +265,7 @@ export default function KioskScreen() {
     );
   }
 
-  // PIN Entry state
+  // ---- PIN ENTRY ----
   return (
     <div className="min-h-screen bg-surface flex flex-col items-center justify-center px-6">
       <div className="w-full max-w-xs flex flex-col items-center">
@@ -287,7 +290,7 @@ export default function KioskScreen() {
         </div>
 
         {error && (
-          <p className="text-danger-500 text-sm font-medium mb-4 animate-fade-in">{error}</p>
+          <p className="text-danger-500 text-sm font-medium mb-4 animate-fade-in text-center">{error}</p>
         )}
 
         <div className="grid grid-cols-3 gap-3 w-full">
@@ -315,7 +318,17 @@ export default function KioskScreen() {
           </button>
         </div>
 
-        <p className="text-xs text-muted mt-8">Enter your PIN to clock in or out</p>
+        <p className="text-xs text-muted mt-8">Enter your 4-digit PIN to clock in or out</p>
+
+        {user?.isKiosk && (
+          <button
+            onClick={logout}
+            className="mt-6 inline-flex items-center gap-1.5 text-xs text-muted hover:text-danger-500 transition-colors"
+          >
+            <LogOut size={14} />
+            Exit kiosk
+          </button>
+        )}
       </div>
     </div>
   );

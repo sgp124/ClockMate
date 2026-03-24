@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 
+import Landing from './pages/Landing';
 import Login from './pages/Login';
 import KioskScreen from './pages/kiosk/KioskScreen';
 
@@ -24,6 +25,7 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <Routes>
+          <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
           <Route path="/kiosk" element={<KioskScreen />} />
 
@@ -44,7 +46,7 @@ export default function App() {
             <Route path="time-off" element={<MyTimeOff />} />
           </Route>
 
-          <Route path="*" element={<Navigate to="/login" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>

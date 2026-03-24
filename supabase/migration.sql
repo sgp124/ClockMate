@@ -28,8 +28,10 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS users (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
-  email text,
-  pin text NOT NULL,
+  email text NOT NULL UNIQUE,
+  phone text,
+  password text NOT NULL,
+  pin text,
   role text NOT NULL DEFAULT 'employee'
     CHECK (role IN ('admin', 'employee', 'kiosk')),
   is_admin_granted boolean NOT NULL DEFAULT false,
@@ -42,7 +44,8 @@ CREATE TABLE IF NOT EXISTS users (
   created_at timestamptz DEFAULT now()
 );
 
-CREATE UNIQUE INDEX idx_users_pin ON users(pin) WHERE is_active = true;
+CREATE UNIQUE INDEX idx_users_email_active ON users(email) WHERE is_active = true;
+CREATE UNIQUE INDEX idx_users_pin_active ON users(pin) WHERE is_active = true AND pin IS NOT NULL;
 
 -- Shifts (scheduled work blocks)
 CREATE TABLE IF NOT EXISTS shifts (
@@ -120,7 +123,6 @@ ALTER TABLE time_off_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
 
--- Helper: check if a user_id is admin or granted admin
 CREATE OR REPLACE FUNCTION is_admin(uid uuid)
 RETURNS boolean AS $$
   SELECT EXISTS (
@@ -131,7 +133,6 @@ RETURNS boolean AS $$
   );
 $$ LANGUAGE sql SECURITY DEFINER STABLE;
 
--- Helper: check if a user_id is the primary admin
 CREATE OR REPLACE FUNCTION is_primary_admin(uid uuid)
 RETURNS boolean AS $$
   SELECT EXISTS (
@@ -141,8 +142,6 @@ RETURNS boolean AS $$
 $$ LANGUAGE sql SECURITY DEFINER STABLE;
 
 -- ---- USERS ----
--- Anyone can read basic user info (needed for kiosk PIN lookup)
--- But pay_rate is protected via a secure view
 CREATE POLICY "users_select" ON users
   FOR SELECT USING (true);
 
@@ -152,7 +151,6 @@ CREATE POLICY "users_insert" ON users
 CREATE POLICY "users_update" ON users
   FOR UPDATE USING (true);
 
--- Secure view that hides pay_rate from non-admins
 CREATE OR REPLACE VIEW users_safe AS
   SELECT
     id, name, email, role, is_admin_granted, color, is_active, created_at,
@@ -209,8 +207,6 @@ CREATE POLICY "audit_select" ON admin_audit_log
 CREATE POLICY "audit_insert" ON admin_audit_log
   FOR INSERT WITH CHECK (true);
 
--- No UPDATE or DELETE on audit log — immutable by design
-
 -- ---- SETTINGS ----
 CREATE POLICY "settings_select" ON settings
   FOR SELECT USING (true);
@@ -220,7 +216,6 @@ CREATE POLICY "settings_update" ON settings
 
 -- ============================================================
 -- 4. AUTO CLOCK-OUT FUNCTION
--- Call via Supabase cron or edge function at 3:30 AM daily
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION auto_clockout()
@@ -244,28 +239,27 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- 5. SEED DATA
 -- ============================================================
 
--- Seed settings (singleton)
 INSERT INTO settings (store_name) VALUES ('My Store')
   ON CONFLICT DO NOTHING;
 
--- Seed admin user (PIN: 1234 → bcrypt hash)
--- The app will hash PINs client-side with bcryptjs.
--- For seeding, we store a pre-hashed value.
--- PIN "0000" for admin — change after first login.
-INSERT INTO users (name, email, pin, role, color)
+-- Seed admin: admin@clockmate.app / admin123 / phone 5550001234 / PIN 1234
+INSERT INTO users (name, email, phone, password, pin, role, color)
 VALUES (
   'Admin',
   'admin@clockmate.app',
-  '$2a$10$XQxBj5QF5.OYkKEPfZYMwOyLqhmDl3JlfGNtz0bMfKxcEP8UAx5Ky',
+  '5550001234',
+  '$2a$10$7Pxszatvlzx47UPY8BGG7OBabeYddmBkIMh.CpFIGigViqrhL28Xq',
+  '1234',
   'admin',
   '#4F46E5'
 );
 
--- Seed kiosk user (PIN: 9999)
-INSERT INTO users (name, pin, role, color)
+-- Seed kiosk: kiosk@clockmate.app / kiosk123 (kiosk role doesn't need a PIN)
+INSERT INTO users (name, email, password, role, color)
 VALUES (
   'Kiosk',
-  '$2a$10$F0dBGFNj7Ql3ygKjA/IZ0.j1F/xyOqdBfzCNKRnBqFEeW.xTNGVya',
+  'kiosk@clockmate.app',
+  '$2a$10$paTJk9ULNGud2cH/QZcyq.d2uyWYFbP68fxoZ3ZohRfcOzG59funq',
   'kiosk',
   '#6B7280'
 );

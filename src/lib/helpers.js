@@ -1,11 +1,11 @@
 import bcrypt from 'bcryptjs';
 
-export function hashPin(pin) {
-  return bcrypt.hashSync(pin, 10);
+export function hashPassword(password) {
+  return bcrypt.hashSync(password, 10);
 }
 
-export function comparePin(pin, hash) {
-  return bcrypt.compareSync(pin, hash);
+export function comparePassword(password, hash) {
+  return bcrypt.compareSync(password, hash);
 }
 
 export function getGreeting() {
@@ -94,7 +94,15 @@ export function formatDuration(hours) {
   return `${h}:${String(m).padStart(2, '0')}`;
 }
 
-export function generatePin() {
+export function derivePinFromPhone(phone) {
+  const digits = (phone || '').replace(/\D/g, '');
+  if (digits.length >= 4) {
+    return digits.slice(-4);
+  }
+  return generateRandomPin();
+}
+
+export function generateRandomPin() {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
