@@ -53,19 +53,23 @@ export default function Login() {
     if (!authedUser) return;
 
     const mismatch =
-      (selectedRole === 'employee' && (authedUser.isAdmin || authedUser.isKiosk)) ||
-      (selectedRole === 'admin' && !authedUser.isAdmin) ||
+      (selectedRole === 'employee' && (authedUser.isPrimaryAdmin || authedUser.isKiosk)) ||
+      (selectedRole === 'admin' && !authedUser.isPrimaryAdmin) ||
       (selectedRole === 'kiosk' && !authedUser.isKiosk);
 
     if (mismatch) {
       logout();
-      const roleLabels = { employee: 'an employee', admin: 'an admin', kiosk: 'a kiosk' };
-      setError(`This account is not ${roleLabels[selectedRole] || 'the correct role'}. Please use the correct sign-in option.`);
+      const msgs = {
+        employee: 'This account is not an employee or manager. Use the Admin sign-in instead.',
+        admin: 'Only the primary admin can sign in here.',
+        kiosk: 'This account is not a kiosk account.',
+      };
+      setError(msgs[selectedRole] || 'Please use the correct sign-in option.');
       return;
     }
 
     if (authedUser.isKiosk) navigate('/kiosk', { replace: true });
-    else if (authedUser.isAdmin) navigate('/admin', { replace: true });
+    else if (authedUser.isPrimaryAdmin) navigate('/admin', { replace: true });
     else navigate('/my/schedule', { replace: true });
   }, [authedUser, navigate, selectedRole]);
 

@@ -10,7 +10,7 @@ const roles = [
     to: '/login?role=admin',
     icon: ShieldCheck,
     title: 'Admin',
-    description: 'Manage schedules, employees, timesheets, and payroll.',
+    description: 'Business owner only — full control of employees, payroll, and settings.',
     iconBg: 'bg-brand-50',
     iconColor: 'text-brand-500',
     features: [
@@ -24,7 +24,7 @@ const roles = [
     to: '/login?role=employee',
     icon: User,
     title: 'Employee',
-    description: 'View your schedule, clock hours, and request time off.',
+    description: 'Employees and managers — schedule, hours, and time off.',
     iconBg: 'bg-emerald-50',
     iconColor: 'text-emerald-500',
     features: [

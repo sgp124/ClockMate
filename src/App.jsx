@@ -20,6 +20,8 @@ import MySchedule from './pages/employee/MySchedule';
 import MyHours from './pages/employee/MyHours';
 import MyTimeOff from './pages/employee/MyTimeOff';
 
+import ManagerGuard from './components/layout/ManagerGuard';
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -29,6 +31,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/kiosk" element={<KioskScreen />} />
 
+          {/* Primary admin only */}
           <Route path="/admin" element={<AdminLayout />}>
             <Route index element={<Dashboard />} />
             <Route path="schedule" element={<Schedule />} />
@@ -40,10 +43,18 @@ export default function App() {
             <Route path="settings" element={<Settings />} />
           </Route>
 
+          {/* Employees + granted admins (managers) */}
           <Route path="/my" element={<EmployeeLayout />}>
             <Route path="schedule" element={<MySchedule />} />
             <Route path="hours" element={<MyHours />} />
             <Route path="time-off" element={<MyTimeOff />} />
+
+            {/* Manager-only routes (granted admin) */}
+            <Route path="manage" element={<ManagerGuard />}>
+              <Route path="schedule" element={<Schedule />} />
+              <Route path="timesheets" element={<Timesheets />} />
+              <Route path="time-off" element={<TimeOff />} />
+            </Route>
           </Route>
 
           <Route path="*" element={<Navigate to="/" replace />} />

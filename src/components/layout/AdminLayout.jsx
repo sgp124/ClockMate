@@ -6,7 +6,7 @@ export default function AdminLayout() {
   const { user } = useAuth();
 
   if (!user) return <Navigate to="/login" replace />;
-  if (!user.isAdmin) return <Navigate to="/my/schedule" replace />;
+  if (!user.isPrimaryAdmin) return <Navigate to="/my/schedule" replace />;
 
   return (
     <div className="min-h-screen bg-surface pb-20">

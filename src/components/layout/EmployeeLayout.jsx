@@ -7,7 +7,7 @@ export default function EmployeeLayout() {
 
   if (!user) return <Navigate to="/login" replace />;
   if (user.isKiosk) return <Navigate to="/kiosk" replace />;
-  if (user.isAdmin) return <Navigate to="/admin" replace />;
+  if (user.isPrimaryAdmin) return <Navigate to="/admin" replace />;
 
   return (
     <div className="min-h-screen bg-surface pb-20">
