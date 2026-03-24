@@ -230,22 +230,7 @@ export default function KioskScreen() {
     setOpenLog(null);
     setSuccessMsg(`${employee.name} clocked out`);
     setPhase('success');
-
-    // Reload state — if there's an upcoming shift, go back to recognized (not PIN)
-    // so the employee can immediately clock in for the next shift
-    setTimeout(async () => {
-      if (employee?.id) {
-        await loadEmployeeState(employee.id);
-        // If there's a shift coming up, stay on recognized screen
-        if (shift) {
-          setSuccessMsg('');
-          setClockOutHours(null);
-          setPhase('recognized');
-          return;
-        }
-      }
-      resetToPin();
-    }, 6000);
+    setTimeout(resetToPin, 6000);
   }
 
   function resetToPin() {

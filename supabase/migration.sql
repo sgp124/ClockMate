@@ -263,7 +263,10 @@ CREATE POLICY "timelogs_insert" ON time_logs
   );
 
 CREATE POLICY "timelogs_update" ON time_logs
-  FOR UPDATE USING (is_admin(auth.uid()));
+  FOR UPDATE USING (
+    is_admin(auth.uid())
+    OR get_user_role(auth.uid()) = 'kiosk'
+  );
 
 -- ---- TIME OFF REQUESTS ----
 CREATE POLICY "timeoff_select" ON time_off_requests
