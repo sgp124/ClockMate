@@ -141,8 +141,24 @@ export function AuthProvider({ children }) {
         return null;
       }
 
-      // Wait briefly for the DB trigger to create the profile row
-      await new Promise((r) => setTimeout(r, 500));
+      // Wait for the DB trigger to create the profile row
+      const userId = data.user.id;
+      let profileReady = false;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise((r) => setTimeout(r, 300));
+        const { data: row } = await supabase
+          .from('users')
+          .select('id')
+          .eq('id', userId)
+          .maybeSingle();
+        if (row) { profileReady = true; break; }
+      }
+
+      if (!profileReady) {
+        setError('Account created but profile setup timed out. Try logging in.');
+        setLoading(false);
+        return null;
+      }
 
       if (phone || role !== 'kiosk') {
         const pin = phone ? await resolveUniquePin(derivePinFromPhone(phone)) : null;
@@ -157,12 +173,10 @@ export function AuthProvider({ children }) {
           phone: phone ? phone.replace(/\D/g, '') : null,
           pin,
           color: COLORS[(count ?? 0) % COLORS.length],
-        }).eq('id', data.user.id);
+        }).eq('id', userId);
       }
 
-      if (data.user) {
-        await loadProfile(data.user.id);
-      }
+      await loadProfile(userId);
       return true;
     } catch (err) {
       setError(err.message);

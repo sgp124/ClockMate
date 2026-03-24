@@ -222,9 +222,12 @@ CREATE POLICY "users_insert_admin" ON users
     OR is_admin(auth.uid())
   );
 
--- Admins can update any user; users can't update themselves (admin does it)
-CREATE POLICY "users_update_admin" ON users
-  FOR UPDATE USING (is_admin(auth.uid()));
+-- Admins can update any user; users can update their own non-role fields
+CREATE POLICY "users_update" ON users
+  FOR UPDATE USING (
+    is_admin(auth.uid())
+    OR id = auth.uid()
+  );
 
 -- ---- SHIFTS ----
 CREATE POLICY "shifts_select" ON shifts
