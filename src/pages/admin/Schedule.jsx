@@ -53,8 +53,21 @@ function shiftDurationHours(start, end) {
   const [eh, em] = end.split(':').map(Number);
   let s = sh * 60 + (sm || 0);
   let e = eh * 60 + (em || 0);
-  if (e < s) e += 24 * 60;
+  if (e <= s) e += 24 * 60;
   return (e - s) / 60;
+}
+
+function crossesMidnight(start, end) {
+  const [sh] = start.split(':').map(Number);
+  const [eh] = end.split(':').map(Number);
+  const s = sh * 60 + parseInt(start.split(':')[1] || 0);
+  const e = eh * 60 + parseInt(end.split(':')[1] || 0);
+  return e <= s;
+}
+
+function formatShiftTime(start, end) {
+  const sep = crossesMidnight(start, end) ? '~' : '–';
+  return `${formatTimeCompact(start)}${sep}${formatTimeCompact(end)}`;
 }
 
 function isDateInApprovedTimeOff(dateStr, requests) {
@@ -559,7 +572,7 @@ export default function Schedule() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
                               <span className="font-bold text-sm text-brand-900">
-                                {formatTimeCompact(s.start_time)}–{formatTimeCompact(s.end_time)}
+                                {formatShiftTime(s.start_time, s.end_time)}
                               </span>
                               {s.note && (
                                 <ClipboardList size={13} className="text-brand-400 shrink-0" />
