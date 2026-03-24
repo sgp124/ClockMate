@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Navigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
-import { getGreeting, getBusinessDate, formatTime, calcDurationHours, formatDuration, toDateString } from '../../lib/helpers';
+import { getGreeting, getBusinessDate, formatTime, formatTimestamp, calcDurationHours, formatDuration, toDateString } from '../../lib/helpers';
 import { Clock, Delete, CheckCircle, AlertTriangle, LogOut, Timer } from 'lucide-react';
 import Spinner from '../../components/ui/Spinner';
 
@@ -259,36 +259,39 @@ export default function KioskScreen() {
 
   // ---- RECOGNIZED ----
   if (phase === 'recognized' && employee) {
-    const isClockedIn = openLog && openLog.business_date === businessDate;
+    // Rule 1: If there's ANY open time_log (clock_out is null), they're clocked in.
+    // This is independent of business date — cross-midnight shifts must still clock out.
+    const isClockedIn = !!openLog;
 
+    // Rule 2: Only check the 15-min restriction when NOT clocked in.
     let canClockIn = true;
     let earlyMessage = null;
 
-    if (!isClockedIn && shift) {
-      const now = currentTime;
-      const [sh, sm] = shift.start_time.split(':').map(Number);
-      const shiftStart = new Date(now);
-      shiftStart.setHours(sh, sm, 0, 0);
+    if (!isClockedIn) {
+      if (shift) {
+        const now = currentTime;
+        const [sh, sm] = shift.start_time.split(':').map(Number);
+        const shiftStart = new Date(now);
+        shiftStart.setHours(sh, sm, 0, 0);
 
-      // Handle cross-midnight: if shift is after midnight (e.g. 01:00) but current time is before midnight
-      if (sh < 10 && now.getHours() >= 10) {
-        shiftStart.setDate(shiftStart.getDate() + 1);
-      }
-      // If shift time already passed today (e.g. shift at 3:10 AM, now 3:20 AM), allow clock in
-      const diffMs = shiftStart - now;
-      const diffMin = diffMs / 60000;
+        // Cross-midnight: shift is after midnight but we're still before midnight
+        if (sh < 10 && now.getHours() >= 10) {
+          shiftStart.setDate(shiftStart.getDate() + 1);
+        }
 
-      if (diffMin > 15) {
+        const diffMin = (shiftStart - now) / 60000;
+
+        // Only block if shift is MORE than 15 min in the future
+        // If diff is negative (shift already started), always allow — they're late
+        if (diffMin > 15) {
+          canClockIn = false;
+          const minsLeft = Math.ceil(diffMin - 15);
+          earlyMessage = `You can clock in at ${formatTime(shift.start_time)} (${minsLeft} min from now).`;
+        }
+      } else {
         canClockIn = false;
-        const minsLeft = Math.ceil(diffMin - 15);
-        earlyMessage = `You can clock in at ${formatTime(shift.start_time)} (${minsLeft} min from now).`;
+        earlyMessage = 'No shift scheduled today. See your manager.';
       }
-      // If shift start already passed, always allow (they're late but should still clock in)
-    }
-
-    if (!isClockedIn && !shift) {
-      canClockIn = false;
-      earlyMessage = 'No shift scheduled today. See your manager.';
     }
 
     return (
@@ -301,9 +304,15 @@ export default function KioskScreen() {
             Today's shift: {formatTime(shift.start_time)} – {formatTime(shift.end_time)}
           </p>
         )}
-        {!shift && <p className="text-muted text-sm mb-4">No shift scheduled today</p>}
+        {!shift && !isClockedIn && <p className="text-muted text-sm mb-4">No shift scheduled today</p>}
 
-        {forgotWarning && (
+        {isClockedIn && openLog && (
+          <p className="text-emerald-600 text-sm font-medium mb-4">
+            Clocked in since {formatTimestamp(openLog.clock_in)}
+          </p>
+        )}
+
+        {forgotWarning && !isClockedIn && (
           <div className="w-full max-w-sm bg-warning-50 border-l-4 border-warning-500 rounded-card p-4 mb-6 flex gap-3">
             <AlertTriangle size={20} className="text-warning-500 flex-shrink-0 mt-0.5" />
             <div>
