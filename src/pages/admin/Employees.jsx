@@ -138,25 +138,32 @@ export default function Employees() {
 
       const color = EMPLOYEE_COLORS[(count ?? 0) % EMPLOYEE_COLORS.length];
 
-      // Create via Supabase Auth — trigger auto-creates the users row
-      const { data: authData, error: signUpErr } = await supabase.auth.admin
-        ? await supabase.auth.admin.createUser({
-            email,
-            password,
-            email_confirm: true,
-            user_metadata: { name, role: form.role },
-          })
-        : await supabase.auth.signUp({
-            email,
-            password,
-            options: { data: { name, role: form.role } },
-          });
+      // Save current admin session before creating the new user
+      const { data: { session: adminSession } } = await supabase.auth.getSession();
+
+      // signUp creates the auth user + triggers the DB profile row
+      const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { name: name, role: form.role } },
+      });
 
       if (signUpErr) throw signUpErr;
-      const newUserId = authData?.user?.id;
-      if (!newUserId) throw new Error('Failed to create auth account.');
+      const newUserId = signUpData?.user?.id;
+      if (!newUserId) throw new Error('Failed to create account.');
 
-      // Update the profile row created by the trigger
+      // Restore admin session immediately so the admin stays logged in
+      if (adminSession) {
+        await supabase.auth.setSession({
+          access_token: adminSession.access_token,
+          refresh_token: adminSession.refresh_token,
+        });
+      }
+
+      // Wait for the DB trigger to create the profile row
+      await new Promise((r) => setTimeout(r, 600));
+
+      // Update the profile with phone, PIN, color
       const { error: updateErr } = await supabase
         .from('users')
         .update({ phone, pin, color })
