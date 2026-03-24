@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { Navigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
-import { getGreeting, getBusinessDate, formatTime } from '../../lib/helpers';
-import { Clock, Delete, CheckCircle, AlertTriangle, LogOut } from 'lucide-react';
+import { getGreeting, getBusinessDate, formatTime, calcDurationHours, formatDuration } from '../../lib/helpers';
+import { Clock, Delete, CheckCircle, AlertTriangle, LogOut, Timer } from 'lucide-react';
 import Spinner from '../../components/ui/Spinner';
 
 const INACTIVITY_TIMEOUT = 10000;
@@ -22,6 +22,7 @@ export default function KioskScreen() {
   const [openLog, setOpenLog] = useState(null);
   const [forgotWarning, setForgotWarning] = useState(null);
   const [successMsg, setSuccessMsg] = useState('');
+  const [clockOutHours, setClockOutHours] = useState(null);
   const [error, setError] = useState(null);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [settings, setSettings] = useState(null);
@@ -106,12 +107,13 @@ export default function KioskScreen() {
         return;
       }
 
-      setEmployee({ id: matched.user_id, name: matched.user_name, color: matched.user_color });
+      const empId = matched.user_id;
+      setEmployee({ id: empId, name: matched.user_name, color: matched.user_color });
 
       const { data: todayShifts } = await supabase
         .from('shifts')
         .select('*')
-        .eq('user_id', matched.id)
+        .eq('user_id', empId)
         .eq('shift_date', businessDate)
         .eq('status', 'published')
         .limit(1);
@@ -121,7 +123,7 @@ export default function KioskScreen() {
       const { data: openLogs } = await supabase
         .from('time_logs')
         .select('*')
-        .eq('user_id', matched.id)
+        .eq('user_id', empId)
         .is('clock_out', null)
         .order('clock_in', { ascending: false })
         .limit(1);
@@ -179,10 +181,11 @@ export default function KioskScreen() {
 
   async function handleClockOut() {
     setPhase('loading');
+    const clockOutTime = new Date().toISOString();
 
     const { error: updateErr } = await supabase
       .from('time_logs')
-      .update({ clock_out: new Date().toISOString() })
+      .update({ clock_out: clockOutTime })
       .eq('id', openLog.id);
 
     if (updateErr) {
@@ -191,9 +194,11 @@ export default function KioskScreen() {
       return;
     }
 
+    const hours = calcDurationHours(openLog.clock_in, clockOutTime);
+    setClockOutHours(hours);
     setSuccessMsg(`${employee.name} clocked out`);
     setPhase('success');
-    setTimeout(resetToPin, SUCCESS_DISPLAY_MS);
+    setTimeout(resetToPin, 6000);
   }
 
   function resetToPin() {
@@ -204,6 +209,7 @@ export default function KioskScreen() {
     setOpenLog(null);
     setForgotWarning(null);
     setSuccessMsg('');
+    setClockOutHours(null);
     setError(null);
   }
 
@@ -220,6 +226,18 @@ export default function KioskScreen() {
         <CheckCircle size={64} className="text-emerald-500 mb-4" />
         <h2 className="text-2xl font-bold text-brand-900">{successMsg}</h2>
         <p className="text-muted text-sm mt-2">{timeStr}</p>
+        {clockOutHours != null && (
+          <div className="mt-6 card bg-brand-50 border border-brand-200 text-center w-full max-w-xs">
+            <div className="flex items-center justify-center gap-2 mb-1">
+              <Timer size={18} className="text-brand-500" />
+              <span className="text-sm font-semibold text-brand-700">Hours Worked</span>
+            </div>
+            <p className="text-3xl font-bold text-brand-900 tabular-nums">
+              {formatDuration(clockOutHours)}
+            </p>
+            <p className="text-xs text-muted mt-1">{clockOutHours.toFixed(2)} hours</p>
+          </div>
+        )}
       </div>
     );
   }
@@ -236,6 +254,33 @@ export default function KioskScreen() {
   // ---- RECOGNIZED ----
   if (phase === 'recognized' && employee) {
     const isClockedIn = openLog && openLog.business_date === businessDate;
+
+    let canClockIn = true;
+    let earlyMessage = null;
+
+    if (!isClockedIn && shift) {
+      const now = currentTime;
+      const [sh, sm] = shift.start_time.split(':').map(Number);
+      const shiftStart = new Date(now);
+      shiftStart.setHours(sh, sm, 0, 0);
+      // If shift is after midnight (e.g. 01:00) but we're before midnight, shift is tomorrow
+      if (sh < 10 && now.getHours() >= 10) {
+        shiftStart.setDate(shiftStart.getDate() + 1);
+      }
+      const diffMs = shiftStart - now;
+      const diffMin = diffMs / 60000;
+
+      if (diffMin > 15) {
+        canClockIn = false;
+        const minsLeft = Math.ceil(diffMin - 15);
+        earlyMessage = `You can clock in at ${formatTime(shift.start_time)} (${minsLeft} min from now).`;
+      }
+    }
+
+    if (!isClockedIn && !shift) {
+      canClockIn = false;
+      earlyMessage = 'No shift scheduled today. See your manager.';
+    }
 
     return (
       <div className="min-h-screen bg-surface flex flex-col items-center justify-center px-6 animate-fade-in">
@@ -261,6 +306,13 @@ export default function KioskScreen() {
           </div>
         )}
 
+        {earlyMessage && !isClockedIn && (
+          <div className="w-full max-w-sm bg-brand-50 border-l-4 border-brand-500 rounded-card p-4 mb-4 flex gap-3">
+            <Clock size={20} className="text-brand-500 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-brand-800">{earlyMessage}</p>
+          </div>
+        )}
+
         <div className="w-full max-w-sm space-y-3">
           {isClockedIn ? (
             <button
@@ -272,7 +324,12 @@ export default function KioskScreen() {
           ) : (
             <button
               onClick={handleClockIn}
-              className="w-full h-16 rounded-2xl bg-emerald-500 text-white text-xl font-bold shadow-lg hover:bg-emerald-600 active:scale-[0.98] transition-all animate-pulse-slow"
+              disabled={!canClockIn}
+              className={`w-full h-16 rounded-2xl text-white text-xl font-bold shadow-lg active:scale-[0.98] transition-all ${
+                canClockIn
+                  ? 'bg-emerald-500 hover:bg-emerald-600 animate-pulse-slow'
+                  : 'bg-gray-300 cursor-not-allowed'
+              }`}
             >
               CLOCK IN
             </button>
