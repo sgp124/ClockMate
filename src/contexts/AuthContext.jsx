@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 
 const AuthContext = createContext(null);
@@ -7,78 +7,106 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const profileLoading = useRef(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    let mounted = true;
+
+    async function init() {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!mounted) return;
       if (session?.user) {
-        loadProfile(session.user.id);
+        await loadProfile(session.user.id);
       } else {
         setLoading(false);
       }
-    });
+    }
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        loadProfile(session.user.id);
-      } else {
+    init();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!mounted) return;
+
+      if (event === 'SIGNED_OUT' || event === 'USER_DELETED') {
         setUser(null);
         setLoading(false);
+        return;
+      }
+
+      if (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN') {
+        if (session?.user) {
+          await loadProfile(session.user.id);
+        }
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   async function loadProfile(authId) {
-    const { data: profile } = await supabase
-      .from('users')
-      .select('id, name, email, phone, pin, role, is_admin_granted, color, is_active')
-      .eq('id', authId)
-      .eq('is_active', true)
-      .maybeSingle();
+    if (profileLoading.current) return;
+    profileLoading.current = true;
 
-    if (!profile) {
-      setUser(null);
+    try {
+      const { data: profile, error: profileErr } = await supabase
+        .from('users')
+        .select('id, name, email, role, is_admin_granted, color, is_active')
+        .eq('id', authId)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (profileErr || !profile) {
+        setUser(null);
+      } else {
+        const effectiveRole =
+          profile.role === 'admin'
+            ? 'admin'
+            : profile.is_admin_granted
+              ? 'granted_admin'
+              : profile.role;
+
+        setUser({
+          id: profile.id,
+          name: profile.name,
+          email: profile.email,
+          role: profile.role,
+          effectiveRole,
+          color: profile.color,
+          isAdmin: effectiveRole === 'admin' || effectiveRole === 'granted_admin',
+          isPrimaryAdmin: profile.role === 'admin',
+          isKiosk: profile.role === 'kiosk',
+          isEmployee: profile.role === 'employee' && !profile.is_admin_granted,
+        });
+      }
+    } finally {
+      profileLoading.current = false;
       setLoading(false);
-      return;
     }
-
-    const effectiveRole =
-      profile.role === 'admin'
-        ? 'admin'
-        : profile.is_admin_granted
-          ? 'granted_admin'
-          : profile.role;
-
-    setUser({
-      id: profile.id,
-      name: profile.name,
-      email: profile.email,
-      role: profile.role,
-      effectiveRole,
-      color: profile.color,
-      isAdmin: effectiveRole === 'admin' || effectiveRole === 'granted_admin',
-      isPrimaryAdmin: profile.role === 'admin',
-      isKiosk: profile.role === 'kiosk',
-      isEmployee: profile.role === 'employee' && !profile.is_admin_granted,
-    });
-    setLoading(false);
   }
 
   const login = useCallback(async (email, password) => {
     setLoading(true);
     setError(null);
     try {
-      const { error: authErr } = await supabase.auth.signInWithPassword({
+      const { data, error: authErr } = await supabase.auth.signInWithPassword({
         email: email.toLowerCase().trim(),
         password,
       });
+
       if (authErr) {
-        setError(authErr.message);
+        setError(authErr.message === 'Invalid login credentials'
+          ? 'Invalid email or password.'
+          : authErr.message);
         setLoading(false);
         return null;
       }
-      // onAuthStateChange will fire and call loadProfile
+
+      if (data?.user) {
+        await loadProfile(data.user.id);
+      }
       return true;
     } catch (err) {
       setError(err.message);
@@ -113,7 +141,9 @@ export function AuthProvider({ children }) {
         return null;
       }
 
-      // Update profile with phone and PIN after trigger creates the row
+      // Wait briefly for the DB trigger to create the profile row
+      await new Promise((r) => setTimeout(r, 500));
+
       if (phone || role !== 'kiosk') {
         const pin = phone ? await resolveUniquePin(derivePinFromPhone(phone)) : null;
         const { count } = await supabase
@@ -130,6 +160,9 @@ export function AuthProvider({ children }) {
         }).eq('id', data.user.id);
       }
 
+      if (data.user) {
+        await loadProfile(data.user.id);
+      }
       return true;
     } catch (err) {
       setError(err.message);
@@ -139,8 +172,9 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await supabase.auth.signOut();
     setUser(null);
+    setLoading(false);
+    await supabase.auth.signOut({ scope: 'local' });
   }, []);
 
   return (

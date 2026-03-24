@@ -1,13 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
-import {
-  formatTime,
-  toDateString,
-  getWeekRange,
-  cn,
-} from '../../lib/helpers';
-import { SHIFT_STATUS, ROLES, DAYS_OF_WEEK } from '../../lib/constants';
+import { toDateString, getWeekRange, cn } from '../../lib/helpers';
+import { SHIFT_STATUS, ROLES } from '../../lib/constants';
 import TopBar from '../../components/layout/TopBar';
 import Modal from '../../components/ui/Modal';
 import Spinner from '../../components/ui/Spinner';
@@ -20,9 +15,9 @@ import {
   Send,
   Trash2,
   Calendar,
+  ClipboardList,
+  AlertTriangle,
 } from 'lucide-react';
-
-const WEEKDAY_MON_SUN = [...DAYS_OF_WEEK.slice(1), DAYS_OF_WEEK[0]];
 
 function addDays(dateStr, delta) {
   const d = new Date(dateStr + 'T12:00:00');
@@ -37,6 +32,14 @@ function formatWeekRangeLabel(startStr, endStr) {
   const left = a.toLocaleDateString('en-US', opts);
   const right = b.toLocaleDateString('en-US', { ...opts, year: 'numeric' });
   return `${left} – ${right}`;
+}
+
+function formatTimeCompact(timeStr) {
+  if (!timeStr) return '—';
+  const [h, m] = timeStr.split(':').map(Number);
+  const suffix = h >= 12 ? 'p' : 'a';
+  const hour12 = h % 12 || 12;
+  return `${hour12}:${String(m).padStart(2, '0')}${suffix}`;
 }
 
 function toTimeInputValue(t) {
@@ -60,21 +63,40 @@ function isDateInApprovedTimeOff(dateStr, requests) {
   );
 }
 
+function getInitials(name) {
+  if (!name) return '?';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0][0].toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function formatDayHeader(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  return d
+    .toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    })
+    .toUpperCase();
+}
+
 export default function Schedule() {
   const { user } = useAuth();
-  const [weekAnchor, setWeekAnchor] = useState(() => toDateString(new Date()));
+  const todayStr = useMemo(() => toDateString(new Date()), []);
+  const [weekAnchor, setWeekAnchor] = useState(todayStr);
   const week = useMemo(() => getWeekRange(weekAnchor), [weekAnchor]);
 
   const [loading, setLoading] = useState(true);
   const [employees, setEmployees] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [timeOffApproved, setTimeOffApproved] = useState([]);
-  const [clockedInIds, setClockedInIds] = useState(() => new Set());
 
   const [shiftModalOpen, setShiftModalOpen] = useState(false);
   const [editingShift, setEditingShift] = useState(null);
-  const [modalUserId, setModalUserId] = useState(null);
-  const [modalDate, setModalDate] = useState(null);
+  const [modalUserId, setModalUserId] = useState('');
+  const [modalDate, setModalDate] = useState('');
   const [formStart, setFormStart] = useState('09:00');
   const [formEnd, setFormEnd] = useState('17:00');
   const [formNote, setFormNote] = useState('');
@@ -88,10 +110,8 @@ export default function Schedule() {
   const loadSchedule = useCallback(async () => {
     const gen = ++fetchGen.current;
     setLoading(true);
-    const start = week.start;
-    const end = week.end;
 
-    const [usersRes, shiftsRes, timeOffRes, logsRes] = await Promise.all([
+    const [usersRes, shiftsRes, timeOffRes] = await Promise.all([
       supabase
         .from('users')
         .select('id, name, color, role, is_admin_granted, is_active')
@@ -102,16 +122,15 @@ export default function Schedule() {
       supabase
         .from('shifts')
         .select('*')
-        .gte('shift_date', start)
-        .lte('shift_date', end)
+        .gte('shift_date', week.start)
+        .lte('shift_date', week.end)
         .order('start_time'),
       supabase
         .from('time_off_requests')
         .select('id, user_id, start_date, end_date, status')
         .eq('status', 'approved')
-        .lte('start_date', end)
-        .gte('end_date', start),
-      supabase.from('time_logs').select('user_id').is('clock_out', null),
+        .lte('start_date', week.end)
+        .gte('end_date', week.start),
     ]);
 
     if (gen !== fetchGen.current) return;
@@ -119,7 +138,6 @@ export default function Schedule() {
     setEmployees(usersRes.data || []);
     setShifts(shiftsRes.data || []);
     setTimeOffApproved(timeOffRes.data || []);
-    setClockedInIds(new Set((logsRes.data || []).map((l) => l.user_id)));
     setLoading(false);
   }, [week.start, week.end]);
 
@@ -127,18 +145,11 @@ export default function Schedule() {
     loadSchedule();
   }, [loadSchedule]);
 
-  const shiftsByUserDate = useMemo(() => {
+  const employeeMap = useMemo(() => {
     const map = new Map();
-    for (const s of shifts) {
-      const key = `${s.user_id}|${s.shift_date}`;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(s);
-    }
-    for (const [, list] of map) {
-      list.sort((a, b) => a.start_time.localeCompare(b.start_time));
-    }
+    for (const e of employees) map.set(e.id, e);
     return map;
-  }, [shifts]);
+  }, [employees]);
 
   const timeOffByUser = useMemo(() => {
     const map = new Map();
@@ -149,48 +160,82 @@ export default function Schedule() {
     return map;
   }, [timeOffApproved]);
 
+  const dayGroups = useMemo(() => {
+    const shiftsByDate = new Map();
+    for (const dateStr of week.dates) {
+      shiftsByDate.set(dateStr, []);
+    }
+    for (const s of shifts) {
+      if (shiftsByDate.has(s.shift_date)) {
+        shiftsByDate.get(s.shift_date).push(s);
+      }
+    }
+
+    const conflictSet = new Set();
+    const byUserDate = new Map();
+    for (const s of shifts) {
+      const k = `${s.user_id}|${s.shift_date}`;
+      byUserDate.set(k, (byUserDate.get(k) || 0) + 1);
+    }
+    for (const [k, count] of byUserDate) {
+      if (count > 1) {
+        const [uid, date] = k.split('|');
+        for (const s of shifts) {
+          if (s.user_id === uid && s.shift_date === date) conflictSet.add(s.id);
+        }
+      }
+    }
+
+    const offByDate = new Map();
+    for (const dateStr of week.dates) {
+      const offEmps = [];
+      for (const emp of employees) {
+        const reqs = timeOffByUser.get(emp.id) || [];
+        if (isDateInApprovedTimeOff(dateStr, reqs)) {
+          offEmps.push(emp);
+        }
+      }
+      offByDate.set(dateStr, offEmps);
+    }
+
+    return week.dates.map((dateStr) => {
+      const dayShifts = shiftsByDate.get(dateStr) || [];
+      let hours = 0;
+      for (const s of dayShifts) hours += shiftDurationHours(s.start_time, s.end_time);
+      return {
+        date: dateStr,
+        shifts: dayShifts,
+        hours,
+        offEmployees: offByDate.get(dateStr) || [],
+        conflictIds: conflictSet,
+      };
+    });
+  }, [shifts, week.dates, employees, timeOffByUser]);
+
   const weekDraftShifts = useMemo(
-    () =>
-      shifts.filter(
-        (s) =>
-          s.status === SHIFT_STATUS.DRAFT && week.dates.includes(s.shift_date)
-      ),
-    [shifts, week.dates]
+    () => shifts.filter((s) => s.status === SHIFT_STATUS.DRAFT),
+    [shifts]
   );
 
   const draftCount = weekDraftShifts.length;
 
-  const weekTotals = useMemo(() => {
-    let hours = 0;
-    for (const s of shifts) {
-      if (!week.dates.includes(s.shift_date)) continue;
-      hours += shiftDurationHours(s.start_time, s.end_time);
-    }
-    return { shiftCount: shifts.length, hours };
-  }, [shifts, week.dates]);
+  const weekTotalHours = useMemo(() => {
+    let h = 0;
+    for (const s of shifts) h += shiftDurationHours(s.start_time, s.end_time);
+    return h;
+  }, [shifts]);
 
   const publishPreview = useMemo(() => {
     const uniq = new Set(weekDraftShifts.map((s) => s.user_id));
     let h = 0;
-    for (const s of weekDraftShifts) {
-      h += shiftDurationHours(s.start_time, s.end_time);
-    }
-    return {
-      shifts: weekDraftShifts.length,
-      employees: uniq.size,
-      hours: h,
-    };
+    for (const s of weekDraftShifts) h += shiftDurationHours(s.start_time, s.end_time);
+    return { shifts: weekDraftShifts.length, employees: uniq.size, hours: h };
   }, [weekDraftShifts]);
 
-  function openAddShift(empId, dateStr) {
-    const hasPto = isDateInApprovedTimeOff(
-      dateStr,
-      timeOffByUser.get(empId) || []
-    );
-    if (hasPto) return;
+  function openAddShift(dateStr) {
     setEditingShift(null);
-    setModalUserId(empId);
-    setModalDate(dateStr);
+    setModalUserId('');
+    setModalDate(dateStr || todayStr);
     setFormStart('09:00');
     setFormEnd('17:00');
     setFormNote('');
@@ -224,6 +269,8 @@ export default function Schedule() {
         const { error } = await supabase
           .from('shifts')
           .update({
+            user_id: payload.user_id,
+            shift_date: payload.shift_date,
             start_time: payload.start_time,
             end_time: payload.end_time,
             note: payload.note,
@@ -232,7 +279,6 @@ export default function Schedule() {
         if (error) throw error;
 
         if (editingShift.status === SHIFT_STATUS.PUBLISHED) {
-          const emp = employees.find((e) => e.id === modalUserId);
           await supabase.from('notifications').insert({
             user_id: modalUserId,
             title: 'Shift Updated',
@@ -333,8 +379,6 @@ export default function Schedule() {
     }
   }
 
-  const modalEmployee = employees.find((e) => e.id === modalUserId);
-
   if (loading && employees.length === 0) {
     return (
       <>
@@ -349,54 +393,97 @@ export default function Schedule() {
   return (
     <>
       <TopBar title="Schedule" showSettings />
-      <main className="max-w-5xl mx-auto px-4 py-5 pb-28 space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-2">
+      <main className="max-w-2xl mx-auto px-4 py-5 pb-28 space-y-4">
+        {/* Week strip */}
+        <div className="card p-3 overflow-hidden">
+          <div className="flex items-center justify-between mb-3">
             <button
               type="button"
               onClick={() => setWeekAnchor(addDays(week.start, -7))}
-              className="rounded-full p-2 text-brand-600 hover:bg-brand-50 transition-colors"
+              className="rounded-full p-1.5 text-brand-600 hover:bg-brand-50 transition-colors"
               aria-label="Previous week"
             >
-              <ChevronLeft size={22} />
+              <ChevronLeft size={20} />
             </button>
-            <div className="flex items-center gap-2 min-w-0">
-              <Calendar size={18} className="text-brand-500 shrink-0" />
-              <span className="text-sm font-semibold text-brand-900 truncate">
-                {formatWeekRangeLabel(week.start, week.end)}
-              </span>
-            </div>
+            <span className="text-sm font-semibold text-brand-900">
+              {formatWeekRangeLabel(week.start, week.end)}
+            </span>
             <button
               type="button"
               onClick={() => setWeekAnchor(addDays(week.start, 7))}
-              className="rounded-full p-2 text-brand-600 hover:bg-brand-50 transition-colors"
+              className="rounded-full p-1.5 text-brand-600 hover:bg-brand-50 transition-colors"
               aria-label="Next week"
             >
-              <ChevronRight size={22} />
+              <ChevronRight size={20} />
             </button>
           </div>
-          <div className="flex flex-wrap items-center gap-2 justify-end">
-            <button
-              type="button"
-              onClick={copyLastWeek}
-              disabled={copyBusy}
-              className="btn-secondary inline-flex items-center gap-2 text-xs sm:text-sm px-4 py-2 disabled:opacity-50"
-            >
-              <Copy size={16} />
-              Copy Last Week
-            </button>
-            <button
-              type="button"
-              onClick={() => draftCount > 0 && setPublishOpen(true)}
-              disabled={draftCount === 0}
-              className="inline-flex items-center gap-2 rounded-full bg-brand-500 px-4 py-2 text-xs sm:text-sm font-semibold text-white shadow-sm transition-all hover:bg-brand-600 active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none"
-            >
-              <Send size={16} />
-              Publish
-            </button>
+
+          <div className="flex overflow-x-auto gap-1 -mx-1 px-1 scrollbar-hide">
+            {week.dates.map((dateStr) => {
+              const d = new Date(dateStr + 'T12:00:00');
+              const dayAbbr = d.toLocaleDateString('en-US', { weekday: 'short' }).slice(0, 2).toUpperCase();
+              const dayNum = d.getDate();
+              const isToday = dateStr === todayStr;
+              return (
+                <button
+                  key={dateStr}
+                  type="button"
+                  onClick={() => setWeekAnchor(dateStr)}
+                  className={cn(
+                    'flex flex-col items-center justify-center flex-1 min-w-[44px] py-2 rounded-xl transition-all',
+                    isToday
+                      ? 'bg-indigo-600 text-white shadow-md'
+                      : 'text-brand-700 hover:bg-brand-50'
+                  )}
+                >
+                  <span className={cn('text-[10px] font-bold tracking-wider', isToday ? 'text-indigo-200' : 'text-muted')}>
+                    {dayAbbr}
+                  </span>
+                  <span className={cn('text-lg font-bold leading-tight', isToday ? 'text-white' : 'text-brand-900')}>
+                    {dayNum}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
+        {/* Action buttons */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openAddShift(todayStr)}
+            className="btn-primary inline-flex items-center gap-1.5 text-sm px-4 py-2"
+          >
+            <Plus size={16} />
+            Add Shift
+          </button>
+          <button
+            type="button"
+            onClick={copyLastWeek}
+            disabled={copyBusy}
+            className="btn-secondary inline-flex items-center gap-1.5 text-sm px-4 py-2 disabled:opacity-50"
+          >
+            <Copy size={15} />
+            Copy Week
+          </button>
+          <button
+            type="button"
+            onClick={() => draftCount > 0 && setPublishOpen(true)}
+            disabled={draftCount === 0}
+            className={cn(
+              'ml-auto inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold shadow-sm transition-all active:scale-[0.98]',
+              draftCount > 0
+                ? 'bg-emerald-500 text-white hover:bg-emerald-600'
+                : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+            )}
+          >
+            <Send size={15} />
+            Publish{draftCount > 0 ? ` (${draftCount})` : ''}
+          </button>
+        </div>
+
+        {/* Day-by-day list */}
         {employees.length === 0 ? (
           <div className="card">
             <EmptyState
@@ -406,229 +493,166 @@ export default function Schedule() {
             />
           </div>
         ) : (
-          <>
-            <div className="card p-0 overflow-hidden shadow-card-lg">
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[720px] border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-border bg-gray-50/80">
-                      <th
-                        className={cn(
-                          'sticky left-0 z-20 min-w-[148px] w-[148px] px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted',
-                          'bg-gray-50/95 backdrop-blur-sm shadow-[4px_0_12px_-6px_rgba(0,0,0,0.12)]'
-                        )}
+          <div className="space-y-2">
+            {dayGroups.map((group) => {
+              const hasContent = group.shifts.length > 0 || group.offEmployees.length > 0;
+              return (
+                <div key={group.date}>
+                  {/* Day header */}
+                  <div className="flex items-center justify-between px-1 py-2">
+                    <h3 className={cn(
+                      'text-xs font-bold tracking-wide',
+                      group.date === todayStr ? 'text-indigo-600' : 'text-muted'
+                    )}>
+                      {formatDayHeader(group.date)}
+                    </h3>
+                    <div className="flex items-center gap-2">
+                      {group.hours > 0 && (
+                        <span className="text-xs font-semibold text-muted tabular-nums">
+                          {group.hours.toFixed(1)}h
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => openAddShift(group.date)}
+                        className="rounded-full p-1 text-brand-400 hover:text-brand-600 hover:bg-brand-50 transition-colors"
+                        aria-label={`Add shift on ${group.date}`}
                       >
-                        Team
-                      </th>
-                      {week.dates.map((dateStr, i) => {
-                        const d = new Date(dateStr + 'T12:00:00');
-                        return (
-                          <th
-                            key={dateStr}
-                            className="min-w-[104px] px-2 py-3 text-center border-l border-border/80"
-                          >
-                            <div className="text-xs font-semibold text-brand-900">
-                              {WEEKDAY_MON_SUN[i]}
-                            </div>
-                            <div className="text-[11px] text-muted font-medium tabular-nums">
-                              {d.toLocaleDateString('en-US', {
-                                month: 'short',
-                                day: 'numeric',
-                              })}
-                            </div>
-                          </th>
-                        );
-                      })}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {employees.map((emp) => {
-                      const empColor = emp.color || '#4F46E5';
-                      const clocked = clockedInIds.has(emp.id);
+                        <Plus size={16} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {!hasContent && (
+                    <div className="card py-4 text-center text-sm text-muted opacity-60">
+                      No shifts
+                    </div>
+                  )}
+
+                  {/* Shift cards */}
+                  <div className="space-y-1.5">
+                    {group.shifts.map((s) => {
+                      const emp = employeeMap.get(s.user_id);
+                      const empColor = emp?.color || '#4F46E5';
+                      const isDraft = s.status === SHIFT_STATUS.DRAFT;
+                      const hasConflict = group.conflictIds.has(s.id);
                       return (
-                        <tr
-                          key={emp.id}
-                          className="border-b border-border/80 last:border-0"
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => openEditShift(s)}
+                          className={cn(
+                            'card w-full text-left p-3 border-l-4 flex items-center gap-3 transition-all hover:shadow-card-lg active:scale-[0.995]',
+                            isDraft ? 'border-l-4 border-dashed' : ''
+                          )}
+                          style={{
+                            borderLeftColor: isDraft ? empColor : empColor,
+                            borderLeftStyle: isDraft ? 'dashed' : 'solid',
+                          }}
                         >
-                          <td
-                            className={cn(
-                              'sticky left-0 z-10 px-3 py-2 align-top',
-                              'bg-card shadow-[4px_0_12px_-6px_rgba(0,0,0,0.08)]'
-                            )}
+                          <div
+                            className="h-9 w-9 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 shadow-sm"
+                            style={{ backgroundColor: empColor }}
                           >
-                            <div className="flex items-center gap-2 min-w-0">
-                              <span
-                                className="h-2.5 w-2.5 rounded-full shrink-0 ring-2 ring-white shadow-sm"
-                                style={{ backgroundColor: empColor }}
-                              />
-                              {clocked && (
-                                <span
-                                  className="h-2 w-2 rounded-full shrink-0 bg-emerald-500 ring-2 ring-emerald-100"
-                                  title="Clocked in"
-                                />
-                              )}
-                              <span className="font-medium text-brand-900 truncate text-sm">
-                                {emp.name}
+                            {getInitials(emp?.name)}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-sm text-brand-900">
+                                {formatTimeCompact(s.start_time)}–{formatTimeCompact(s.end_time)}
                               </span>
+                              {s.note && (
+                                <ClipboardList size={13} className="text-brand-400 shrink-0" />
+                              )}
+                              {hasConflict && (
+                                <AlertTriangle size={13} className="text-red-500 shrink-0" />
+                              )}
+                              {isDraft && (
+                                <span className="badge badge-draft text-[10px] ml-1">Draft</span>
+                              )}
                             </div>
-                          </td>
-                          {week.dates.map((dateStr) => {
-                            const key = `${emp.id}|${dateStr}`;
-                            const cellShifts = shiftsByUserDate.get(key) || [];
-                            const ptoList = timeOffByUser.get(emp.id) || [];
-                            const onPto = isDateInApprovedTimeOff(
-                              dateStr,
-                              ptoList
-                            );
-                            const conflict = cellShifts.length > 1;
-                            return (
-                              <td
-                                key={dateStr}
-                                className={cn(
-                                  'align-top p-1.5 border-l border-border/60 min-h-[72px] relative transition-shadow',
-                                  conflict &&
-                                    'ring-2 ring-inset ring-danger-500 rounded-lg z-[1]',
-                                  cellShifts.length === 0 &&
-                                    !onPto &&
-                                    'cursor-pointer'
-                                )}
-                                onClick={() => {
-                                  if (cellShifts.length) return;
-                                  openAddShift(emp.id, dateStr);
-                                }}
-                              >
-                                {onPto && (
-                                  <div
-                                    className="absolute inset-1 rounded-lg pointer-events-none z-0 opacity-90"
-                                    style={{
-                                      backgroundImage: `repeating-linear-gradient(
-                                        -45deg,
-                                        #f3f4f6,
-                                        #f3f4f6 5px,
-                                        #d1d5db 5px,
-                                        #d1d5db 10px
-                                      )`,
-                                    }}
-                                    aria-hidden
-                                  />
-                                )}
-                                <div
-                                  className={cn(
-                                    'relative z-[1] flex flex-col gap-1 min-h-[56px]',
-                                    onPto && cellShifts.length === 0
-                                      ? 'pointer-events-none'
-                                      : ''
-                                  )}
-                                >
-                                  {cellShifts.map((s) => {
-                                    const draft =
-                                      s.status === SHIFT_STATUS.DRAFT;
-                                    return (
-                                      <button
-                                        key={s.id}
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          openEditShift(s);
-                                        }}
-                                        className={cn(
-                                          'w-full text-left rounded-full px-2.5 py-1.5 text-[11px] font-semibold leading-tight transition-all hover:brightness-95 active:scale-[0.99] shadow-sm',
-                                          draft
-                                            ? 'border-2 border-dashed'
-                                            : 'border border-transparent'
-                                        )}
-                                        style={
-                                          draft
-                                            ? {
-                                                backgroundColor: `${empColor}26`,
-                                                borderColor: empColor,
-                                                color: '#1E1B4B',
-                                              }
-                                            : {
-                                                backgroundColor: empColor,
-                                                color: '#fff',
-                                              }
-                                        }
-                                      >
-                                        {formatTime(s.start_time)} –{' '}
-                                        {formatTime(s.end_time)}
-                                      </button>
-                                    );
-                                  })}
-                                  {cellShifts.length === 0 && !onPto && (
-                                    <div className="flex-1 min-h-[48px] rounded-lg border border-dashed border-border/80 text-muted hover:border-brand-300 hover:bg-brand-50/50 transition-colors flex items-center justify-center cursor-pointer pointer-events-none">
-                                      <Plus size={16} className="opacity-50" />
-                                    </div>
-                                  )}
-                                  {cellShifts.length === 0 && onPto && (
-                                    <div className="flex-1 min-h-[48px] rounded-lg flex items-center justify-center text-[10px] font-medium text-muted uppercase tracking-wide">
-                                      Off
-                                    </div>
-                                  )}
-                                </div>
-                              </td>
-                            );
-                          })}
-                        </tr>
+                            <p className="text-sm text-brand-700 truncate">{emp?.name || 'Unknown'}</p>
+                            {s.note && (
+                              <p className="text-xs text-muted truncate mt-0.5">{s.note}</p>
+                            )}
+                          </div>
+                          <span className="text-xs text-muted tabular-nums shrink-0">
+                            {shiftDurationHours(s.start_time, s.end_time).toFixed(1)}h
+                          </span>
+                        </button>
                       );
                     })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
 
-            <div className="card flex flex-wrap items-center justify-between gap-3 text-sm">
-              <div className="flex items-center gap-4">
-                <span className="text-muted">Shifts this week</span>
-                <span className="font-bold tabular-nums text-brand-900">
-                  {weekTotals.shiftCount}
-                </span>
-              </div>
-              <div className="flex items-center gap-4">
-                <span className="text-muted">Labor hours</span>
-                <span className="font-bold tabular-nums text-brand-900">
-                  {weekTotals.hours.toFixed(1)}h
-                </span>
-              </div>
-            </div>
-          </>
+                    {/* Time off cards */}
+                    {group.offEmployees.map((emp) => (
+                      <div
+                        key={`off-${emp.id}`}
+                        className="card w-full p-3 border-l-4 border-gray-300 flex items-center gap-3 opacity-60"
+                      >
+                        <div className="h-9 w-9 rounded-full flex items-center justify-center bg-gray-200 text-gray-500 text-xs font-bold shrink-0">
+                          {getInitials(emp.name)}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Off</span>
+                          <p className="text-sm text-gray-500 truncate">{emp.name}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
+
+        {/* Week total */}
+        <div className="card flex items-center justify-between py-3 text-sm">
+          <span className="font-semibold text-brand-900">Week Total</span>
+          <div className="flex items-center gap-4">
+            <span className="text-muted">{shifts.length} shift{shifts.length !== 1 ? 's' : ''}</span>
+            <span className="font-bold tabular-nums text-brand-900">
+              {weekTotalHours.toFixed(1)}h
+            </span>
+          </div>
+        </div>
       </main>
 
+      {/* Add/Edit Shift Modal */}
       <Modal
         open={shiftModalOpen}
         onClose={() => !formSaving && setShiftModalOpen(false)}
-        title={editingShift ? 'Edit shift' : 'Add shift'}
+        title={editingShift ? 'Edit Shift' : 'Add Shift'}
         size="full"
       >
         <div className="space-y-4">
           <div>
-            <p className="label mb-0">Employee</p>
-            <p className="text-brand-900 font-semibold">
-              {modalEmployee?.name || '—'}
-            </p>
+            <label className="label" htmlFor="shift-emp">Employee</label>
+            <select
+              id="shift-emp"
+              value={modalUserId}
+              onChange={(e) => setModalUserId(e.target.value)}
+              className="input-field"
+              disabled={!!editingShift}
+            >
+              <option value="">Select employee…</option>
+              {employees.map((e) => (
+                <option key={e.id} value={e.id}>{e.name}</option>
+              ))}
+            </select>
           </div>
           <div>
-            <p className="label mb-0">Date</p>
-            <p className="text-brand-900 font-medium">
-              {modalDate
-                ? new Date(modalDate + 'T12:00:00').toLocaleDateString(
-                    'en-US',
-                    {
-                      weekday: 'long',
-                      month: 'long',
-                      day: 'numeric',
-                      year: 'numeric',
-                    }
-                  )
-                : '—'}
-            </p>
+            <label className="label" htmlFor="shift-date">Date</label>
+            <input
+              id="shift-date"
+              type="date"
+              value={modalDate}
+              onChange={(e) => setModalDate(e.target.value)}
+              className="input-field"
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label" htmlFor="shift-start">
-                Start
-              </label>
+              <label className="label" htmlFor="shift-start">Start</label>
               <input
                 id="shift-start"
                 type="time"
@@ -638,9 +662,7 @@ export default function Schedule() {
               />
             </div>
             <div>
-              <label className="label" htmlFor="shift-end">
-                End
-              </label>
+              <label className="label" htmlFor="shift-end">End</label>
               <input
                 id="shift-end"
                 type="time"
@@ -651,15 +673,14 @@ export default function Schedule() {
             </div>
           </div>
           <div>
-            <label className="label" htmlFor="shift-note">
-              Note (optional)
-            </label>
+            <label className="label" htmlFor="shift-note">Note / Duties</label>
             <textarea
               id="shift-note"
-              rows={2}
+              rows={3}
               value={formNote}
               onChange={(e) => setFormNote(e.target.value)}
               className="input-field resize-none"
+              placeholder="What should this employee do during the shift?"
             />
           </div>
           <div className="flex flex-col-reverse sm:flex-row gap-2 pt-2">
@@ -685,7 +706,7 @@ export default function Schedule() {
             <button
               type="button"
               onClick={saveShift}
-              disabled={formSaving}
+              disabled={formSaving || !modalUserId}
               className="btn-primary flex-1 sm:flex-none inline-flex items-center justify-center gap-2"
             >
               {formSaving ? <Spinner size="sm" /> : null}
@@ -695,10 +716,11 @@ export default function Schedule() {
         </div>
       </Modal>
 
+      {/* Publish Modal */}
       <Modal
         open={publishOpen}
         onClose={() => !publishSaving && setPublishOpen(false)}
-        title="Publish schedule"
+        title="Publish Schedule"
         size="md"
       >
         <p className="text-sm text-brand-800 leading-relaxed">
@@ -707,10 +729,8 @@ export default function Schedule() {
           draft shift{publishPreview.shifts === 1 ? '' : 's'} for{' '}
           <strong className="text-brand-900">{publishPreview.employees}</strong>{' '}
           employee{publishPreview.employees === 1 ? '' : 's'},{' '}
-          <strong className="text-brand-900">
-            {publishPreview.hours.toFixed(1)}
-          </strong>{' '}
-          total hours. Team members will see published shifts.
+          <strong className="text-brand-900">{publishPreview.hours.toFixed(1)}</strong>{' '}
+          total hours. Team members will be notified.
         </p>
         <div className="flex gap-2 mt-6">
           <button
