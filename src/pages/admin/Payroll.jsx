@@ -50,14 +50,16 @@ function periodBoundsWeekly(dateStr, weekStartDay) {
   return { start, end: toDateString(endD) };
 }
 
-function periodBoundsBiweekly(dateStr, weekStartDay) {
-  const weekStartStr = startOfWeekContaining(dateStr, weekStartDay);
-  const anchor = parseLocalNoon(startOfWeekContaining('1970-01-01', weekStartDay));
-  const ws = parseLocalNoon(weekStartStr);
-  const days = Math.round((ws - anchor) / MS_PER_DAY);
-  const bi = Math.floor(days / 14);
-  const periodStart = new Date(anchor.getTime() + bi * 14 * MS_PER_DAY);
-  const endD = new Date(periodStart.getTime() + 13 * MS_PER_DAY);
+const BIWEEKLY_ANCHOR = new Date('2026-03-23T00:00:00');
+
+function periodBoundsBiweekly(dateStr) {
+  const target = parseLocalNoon(dateStr);
+  const diffDays = Math.floor((target - BIWEEKLY_ANCHOR) / MS_PER_DAY);
+  const periodIdx = Math.floor(diffDays / 14);
+  const periodStart = new Date(BIWEEKLY_ANCHOR);
+  periodStart.setDate(periodStart.getDate() + periodIdx * 14);
+  const endD = new Date(periodStart);
+  endD.setDate(periodStart.getDate() + 13);
   return { start: toDateString(periodStart), end: toDateString(endD) };
 }
 
