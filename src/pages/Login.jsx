@@ -40,24 +40,34 @@ export default function Login() {
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [createdPin] = useState(null);
-  const { login, register, loading, error, setError } = useAuth();
+  const [createdPin, setCreatedPin] = useState(null);
+  const { user: authedUser, login, register, logout, loading, error, setError } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const greeting = getGreeting();
-
-  const { user: authedUser } = useAuth();
   const selectedRole = searchParams.get('role') || 'employee';
   const config = roleConfig[selectedRole] || roleConfig.employee;
   const RoleIcon = config.icon;
 
   useEffect(() => {
-    if (authedUser) {
-      if (authedUser.isKiosk) navigate('/kiosk', { replace: true });
-      else if (authedUser.isAdmin) navigate('/admin', { replace: true });
-      else navigate('/my/schedule', { replace: true });
+    if (!authedUser) return;
+
+    const mismatch =
+      (selectedRole === 'employee' && (authedUser.isAdmin || authedUser.isKiosk)) ||
+      (selectedRole === 'admin' && !authedUser.isAdmin) ||
+      (selectedRole === 'kiosk' && !authedUser.isKiosk);
+
+    if (mismatch) {
+      logout();
+      const roleLabels = { employee: 'an employee', admin: 'an admin', kiosk: 'a kiosk' };
+      setError(`This account is not ${roleLabels[selectedRole] || 'the correct role'}. Please use the correct sign-in option.`);
+      return;
     }
-  }, [authedUser, navigate]);
+
+    if (authedUser.isKiosk) navigate('/kiosk', { replace: true });
+    else if (authedUser.isAdmin) navigate('/admin', { replace: true });
+    else navigate('/my/schedule', { replace: true });
+  }, [authedUser, navigate, selectedRole]);
 
   function resetForm() {
     setEmail('');
@@ -84,7 +94,6 @@ export default function Login() {
       }
       const result = await login(email, password);
       if (!result) return;
-      // onAuthStateChange will update user state; wait then route
     } else {
       if (!name.trim() || !email.trim() || !password) {
         setError('Please fill in all fields.');

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { Navigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { getGreeting, getBusinessDate, formatTime } from '../../lib/helpers';
@@ -10,6 +11,10 @@ const SUCCESS_DISPLAY_MS = 4000;
 
 export default function KioskScreen() {
   const { user, logout } = useAuth();
+
+  // Only kiosk accounts allowed here
+  if (!user) return <Navigate to="/" replace />;
+  if (!user.isKiosk) return <Navigate to="/" replace />;
   const [phase, setPhase] = useState('pin'); // pin | loading | recognized | success
   const [pin, setPin] = useState('');
   const [employee, setEmployee] = useState(null);
@@ -25,7 +30,18 @@ export default function KioskScreen() {
   useEffect(() => {
     const interval = setInterval(() => setCurrentTime(new Date()), 1000);
     loadSettings();
-    return () => clearInterval(interval);
+
+    // Lock the kiosk — block browser back button
+    window.history.pushState(null, '', window.location.href);
+    function blockBack() {
+      window.history.pushState(null, '', window.location.href);
+    }
+    window.addEventListener('popstate', blockBack);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('popstate', blockBack);
+    };
   }, []);
 
   useEffect(() => {
