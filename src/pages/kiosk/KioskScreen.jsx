@@ -61,6 +61,60 @@ export default function KioskScreen() {
     if (data) setSettings(data);
   }
 
+  async function loadEmployeeState(empId) {
+    // Find the nearest relevant shift: check yesterday, today, and tomorrow
+    // to handle cross-midnight and early-morning shifts
+    const now = new Date();
+    const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+    const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+    const datesToCheck = [toDateString(yesterday), toDateString(now), toDateString(tomorrow)];
+
+    const { data: nearShifts } = await supabase
+      .from('shifts')
+      .select('*')
+      .eq('user_id', empId)
+      .in('shift_date', datesToCheck)
+      .eq('status', 'published')
+      .order('shift_date')
+      .order('start_time');
+
+    // Pick the best shift: the one whose start time is closest to now (prefer upcoming/current)
+    let bestShift = null;
+    if (nearShifts?.length) {
+      let bestDiff = Infinity;
+      for (const s of nearShifts) {
+        const [sh, sm] = s.start_time.split(':').map(Number);
+        const shiftStart = new Date(s.shift_date + 'T00:00:00');
+        shiftStart.setHours(sh, sm, 0, 0);
+        // For after-midnight shifts on the previous calendar day
+        if (sh < 10 && s.shift_date === toDateString(yesterday)) {
+          shiftStart.setDate(shiftStart.getDate() + 1);
+        }
+        const diff = shiftStart - now;
+        const absDiff = Math.abs(diff);
+        // Prefer shifts that haven't ended yet (diff > -12 hours)
+        if (diff > -12 * 60 * 60 * 1000 && absDiff < bestDiff) {
+          bestDiff = absDiff;
+          bestShift = s;
+        }
+      }
+      if (!bestShift) bestShift = nearShifts[nearShifts.length - 1];
+    }
+    setShift(bestShift);
+
+    const { data: openLogs } = await supabase
+      .from('time_logs')
+      .select('*')
+      .eq('user_id', empId)
+      .is('clock_out', null)
+      .order('clock_in', { ascending: false })
+      .limit(1);
+
+    const open = openLogs?.[0] || null;
+    setOpenLog(open);
+    setForgotWarning(null);
+  }
+
   const greeting = getGreeting();
   const businessDate = getBusinessDate(
     currentTime,
@@ -110,39 +164,7 @@ export default function KioskScreen() {
       const empId = matched.user_id;
       setEmployee({ id: empId, name: matched.user_name, color: matched.user_color });
 
-      // Check both today's business date and the calendar date for after-midnight shifts
-      const calendarDate = toDateString(currentTime);
-      const datesToCheck = [businessDate];
-      if (calendarDate !== businessDate) datesToCheck.push(calendarDate);
-
-      const { data: todayShifts } = await supabase
-        .from('shifts')
-        .select('*')
-        .eq('user_id', empId)
-        .in('shift_date', datesToCheck)
-        .eq('status', 'published')
-        .order('start_time')
-        .limit(1);
-
-      setShift(todayShifts?.[0] || null);
-
-      const { data: openLogs } = await supabase
-        .from('time_logs')
-        .select('*')
-        .eq('user_id', empId)
-        .is('clock_out', null)
-        .order('clock_in', { ascending: false })
-        .limit(1);
-
-      const open = openLogs?.[0] || null;
-      setOpenLog(open);
-
-      if (open && open.business_date !== businessDate) {
-        setForgotWarning(open.business_date);
-      } else {
-        setForgotWarning(null);
-      }
-
+      await loadEmployeeState(empId);
       setPhase('recognized');
     } catch {
       setError('Connection error. Please try again.');
@@ -166,9 +188,12 @@ export default function KioskScreen() {
       // GPS not available
     }
 
+    // Use the shift's date as business_date so the time_log aligns with the shift
+    const clockBusinessDate = shift?.shift_date || businessDate;
+
     const { error: insertErr } = await supabase.from('time_logs').insert({
       user_id: employee.id,
-      business_date: businessDate,
+      business_date: clockBusinessDate,
       clock_in: new Date().toISOString(),
       lat,
       lng,
@@ -202,9 +227,25 @@ export default function KioskScreen() {
 
     const hours = calcDurationHours(openLog.clock_in, clockOutTime);
     setClockOutHours(hours);
+    setOpenLog(null);
     setSuccessMsg(`${employee.name} clocked out`);
     setPhase('success');
-    setTimeout(resetToPin, 6000);
+
+    // Reload state — if there's an upcoming shift, go back to recognized (not PIN)
+    // so the employee can immediately clock in for the next shift
+    setTimeout(async () => {
+      if (employee?.id) {
+        await loadEmployeeState(employee.id);
+        // If there's a shift coming up, stay on recognized screen
+        if (shift) {
+          setSuccessMsg('');
+          setClockOutHours(null);
+          setPhase('recognized');
+          return;
+        }
+      }
+      resetToPin();
+    }, 6000);
   }
 
   function resetToPin() {
