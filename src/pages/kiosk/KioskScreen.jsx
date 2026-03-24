@@ -371,10 +371,14 @@ export default function KioskScreen() {
           {[0, 1, 2, 3].map((i) => (
             <div
               key={i}
-              className={`w-4 h-4 rounded-full transition-all duration-200 ${
-                i < pin.length ? 'bg-brand-500 scale-110' : 'bg-gray-200'
+              className={`w-12 h-12 rounded-xl flex items-center justify-center text-2xl font-bold tabular-nums transition-all duration-200 ${
+                i < pin.length
+                  ? 'bg-brand-500 text-white scale-105 shadow-md'
+                  : 'bg-gray-100 text-gray-300'
               }`}
-            />
+            >
+              {i < pin.length ? pin[i] : '·'}
+            </div>
           ))}
         </div>
 
