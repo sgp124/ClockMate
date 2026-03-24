@@ -5,7 +5,7 @@ import BottomNav from './BottomNav';
 export default function EmployeeLayout() {
   const { user } = useAuth();
 
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) return <Navigate to="/" replace />;
   if (user.isKiosk) return <Navigate to="/kiosk" replace />;
   if (user.isPrimaryAdmin) return <Navigate to="/admin" replace />;
 

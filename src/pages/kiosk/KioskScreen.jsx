@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Navigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
-import { getGreeting, getBusinessDate, formatTime, calcDurationHours, formatDuration } from '../../lib/helpers';
+import { getGreeting, getBusinessDate, formatTime, calcDurationHours, formatDuration, toDateString } from '../../lib/helpers';
 import { Clock, Delete, CheckCircle, AlertTriangle, LogOut, Timer } from 'lucide-react';
 import Spinner from '../../components/ui/Spinner';
 
@@ -110,12 +110,18 @@ export default function KioskScreen() {
       const empId = matched.user_id;
       setEmployee({ id: empId, name: matched.user_name, color: matched.user_color });
 
+      // Check both today's business date and the calendar date for after-midnight shifts
+      const calendarDate = toDateString(currentTime);
+      const datesToCheck = [businessDate];
+      if (calendarDate !== businessDate) datesToCheck.push(calendarDate);
+
       const { data: todayShifts } = await supabase
         .from('shifts')
         .select('*')
         .eq('user_id', empId)
-        .eq('shift_date', businessDate)
+        .in('shift_date', datesToCheck)
         .eq('status', 'published')
+        .order('start_time')
         .limit(1);
 
       setShift(todayShifts?.[0] || null);
@@ -263,10 +269,12 @@ export default function KioskScreen() {
       const [sh, sm] = shift.start_time.split(':').map(Number);
       const shiftStart = new Date(now);
       shiftStart.setHours(sh, sm, 0, 0);
-      // If shift is after midnight (e.g. 01:00) but we're before midnight, shift is tomorrow
+
+      // Handle cross-midnight: if shift is after midnight (e.g. 01:00) but current time is before midnight
       if (sh < 10 && now.getHours() >= 10) {
         shiftStart.setDate(shiftStart.getDate() + 1);
       }
+      // If shift time already passed today (e.g. shift at 3:10 AM, now 3:20 AM), allow clock in
       const diffMs = shiftStart - now;
       const diffMin = diffMs / 60000;
 
@@ -275,6 +283,7 @@ export default function KioskScreen() {
         const minsLeft = Math.ceil(diffMin - 15);
         earlyMessage = `You can clock in at ${formatTime(shift.start_time)} (${minsLeft} min from now).`;
       }
+      // If shift start already passed, always allow (they're late but should still clock in)
     }
 
     if (!isClockedIn && !shift) {

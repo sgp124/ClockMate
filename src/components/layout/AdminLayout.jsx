@@ -5,7 +5,7 @@ import BottomNav from './BottomNav';
 export default function AdminLayout() {
   const { user } = useAuth();
 
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) return <Navigate to="/" replace />;
   if (!user.isPrimaryAdmin) return <Navigate to="/my/schedule" replace />;
 
   return (
