@@ -234,6 +234,7 @@ CREATE POLICY "shifts_select" ON shifts
   FOR SELECT USING (
     is_admin(auth.uid())
     OR user_id = auth.uid()
+    OR get_user_role(auth.uid()) = 'kiosk'
   );
 
 CREATE POLICY "shifts_insert" ON shifts
@@ -251,6 +252,7 @@ CREATE POLICY "timelogs_select" ON time_logs
   FOR SELECT USING (
     is_admin(auth.uid())
     OR user_id = auth.uid()
+    OR get_user_role(auth.uid()) = 'kiosk'
   );
 
 CREATE POLICY "timelogs_insert" ON time_logs
